@@ -1,7 +1,7 @@
 # Dataset Description
 
 This dataset is associated with the "Multi-Sensor Multi-Target Tracking System for Harbour Surveillance" project
-of the Autonomous Marine Robotics course 2026. The data correspond to the departure of Dana IV in the harbour of Copenhagen on 5 match 2026. 
+of the Autonomous Marine Robotics course 2026. The data correspond to the departure of Dana IV in the harbour of Copenhagen on 5 march 2026. 
 
 # Important information
 
