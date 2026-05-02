@@ -1,0 +1,125 @@
+{
+  "T2": {
+    "radar_basic": "passed",
+    "camera_offset": "passed",
+    "ais_same_origin": "passed",
+    "jacobian_finite_difference": "passed",
+    "ais_covariance_transform": "passed"
+  },
+  "T3": {
+    "bootstrap_sensor": "radar",
+    "bootstrap_time_s": 6.6667,
+    "confirmation_time_s": 16.6667,
+    "accepted_updates": 32,
+    "rmse_after_start_m": 3.546,
+    "nis_inside_95_pct": 90.62,
+    "accepted_by_sensor": {
+      "radar": 32,
+      "camera": 0,
+      "ais": 0
+    }
+  },
+  "T3_pass": {
+    "confirmation": true,
+    "rmse": true,
+    "nis": true
+  },
+  "T4": {
+    "radar_only": {
+      "bootstrap_sensor": "radar",
+      "bootstrap_time_s": 6.4,
+      "confirmation_time_s": 12.8,
+      "accepted_updates": 35,
+      "rmse_after_start_m": 3.238,
+      "nis_inside_95_pct": 94.29,
+      "accepted_by_sensor": {
+        "radar": 35,
+        "camera": 0,
+        "ais": 0
+      }
+    },
+    "sequential": {
+      "bootstrap_sensor": "radar",
+      "bootstrap_time_s": 3.2,
+      "confirmation_time_s": 6.0,
+      "accepted_updates": 42,
+      "rmse_after_start_m": 2.609,
+      "nis_inside_95_pct": 93.02,
+      "accepted_by_sensor": {
+        "radar": 36,
+        "camera": 7,
+        "ais": 0
+      }
+    },
+    "joint": {
+      "bootstrap_sensor": "radar",
+      "bootstrap_time_s": 3.2,
+      "confirmation_time_s": 6.0,
+      "accepted_updates": 42,
+      "rmse_after_start_m": 2.608,
+      "nis_inside_95_pct": 92.86,
+      "accepted_by_sensor": {
+        "radar": 36,
+        "camera": 7,
+        "ais": 0
+      }
+    },
+    "rmse_window_0_20_m": {
+      "radar_only": 6.003,
+      "sequential": 4.336,
+      "joint": 4.336
+    }
+  },
+  "T5": {
+    "without_ais": {
+      "bootstrap_sensor": "radar",
+      "bootstrap_time_s": 6.4,
+      "confirmation_time_s": 35.2,
+      "accepted_updates": 56,
+      "rmse_after_start_m": 4.227,
+      "nis_inside_95_pct": 86.44,
+      "accepted_by_sensor": {
+        "radar": 40,
+        "camera": 19,
+        "ais": 0
+      }
+    },
+    "with_ais": {
+      "bootstrap_sensor": "radar",
+      "bootstrap_time_s": 3.2,
+      "confirmation_time_s": 6.4,
+      "accepted_updates": 85,
+      "rmse_after_start_m": 3.042,
+      "nis_inside_95_pct": 87.63,
+      "accepted_by_sensor": {
+        "radar": 41,
+        "camera": 19,
+        "ais": 37
+      }
+    },
+    "ais_only_initiation": {
+      "bootstrap_sensor": "ais",
+      "bootstrap_time_s": 6.0,
+      "confirmation_time_s": 12.0,
+      "accepted_updates": 38,
+      "rmse_after_start_m": 3.606,
+      "nis_inside_95_pct": 86.84,
+      "accepted_by_sensor": {
+        "radar": 0,
+        "camera": 0,
+        "ais": 38
+      }
+    },
+    "rmse_available_windows_m": {
+      "without_ais": 4.478,
+      "with_ais": 3.147
+    },
+    "dropout_60_90": {
+      "rmse_without_ais_m": 3.001,
+      "rmse_with_ais_m": 2.596,
+      "max_history_gap_s": 2.0,
+      "accepted_radar_camera_updates": 9
+    },
+    "first_ais_reacquisition_after_90_s": 93.0
+  }
+}
