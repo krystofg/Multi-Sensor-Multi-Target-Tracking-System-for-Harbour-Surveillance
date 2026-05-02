@@ -19,6 +19,9 @@ only as the source of scenario JSON files in `harbour_sim_output/`.
   Scenario D.
 - T7 tentative/confirmed/coasting/deleted lifecycle, duplicate merging, and
   MOTP/CE metrics on Scenarios D and E.
+- T1 state-of-the-art survey in `T1_state_of_the_art.md`.
+- Implementation explanation in `IMPLEMENTATION_NOTES.md`.
+- Result figure generation in `generate_result_plots.py`.
 
 ## Run
 
@@ -35,11 +38,19 @@ python tracking_solution/run_t2_t5.py
 python tracking_solution/run_t6_t7.py
 ```
 
+Generate figures for the notebook/poster:
+
+```powershell
+python tracking_solution/generate_result_plots.py
+```
+
 The script prints the validation report and writes:
 
 ```text
 tracking_solution/results_t2_t5.json
 tracking_solution/results_t6_t7.json
+tracking_solution/results_t2_t7.json
+tracking_solution/figures/*.png
 ```
 
 ## Notes
