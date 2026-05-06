@@ -2,7 +2,7 @@ from pathlib import Path
 from itertools import groupby
 from matplotlib import pyplot as plt
 import numpy as np
-from coordinate_frame_manager import CoordinateFrameManager
+from Code.T2.coordinate_frame_manager import CoordinateFrameManager
 from harbour_sim_output.load_simulation_data import load_simulation_output
 
 # =============================================================================
