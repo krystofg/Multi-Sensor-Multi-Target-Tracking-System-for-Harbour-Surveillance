@@ -73,16 +73,16 @@ def plot_tracking_results(simulation_output, est_history, nis_history, title="Tr
     ax.set_xlabel("Time [s]"); ax.set_ylabel("NIS")
     ax.legend(fontsize=8); ax.grid(True)
 
-    # 4. NIS Histogram
-    ax = axes[1, 1]
-    ax.set_title("NIS Histogram")
-    if nis_vals:
-        ax.hist(nis_vals, bins=20, color='steelblue', edgecolor='white')
-        ax.axvline(chi2_hi, color='r', ls='--', label=f"95% upper = {chi2_hi:.2f}")
-        ax.set_xlabel("NIS"); ax.set_ylabel("Count")
-        ax.legend(fontsize=8); ax.grid(True)
-    else:
-        ax.text(0.5, 0.5, "No NIS data", ha='center')
+    # # 4. NIS Histogram
+    # ax = axes[1, 1]
+    # ax.set_title("NIS Histogram")
+    # if nis_vals:
+    #     ax.hist(nis_vals, bins=20, color='steelblue', edgecolor='white')
+    #     ax.axvline(chi2_hi, color='r', ls='--', label=f"95% upper = {chi2_hi:.2f}")
+    #     ax.set_xlabel("NIS"); ax.set_ylabel("Count")
+    #     ax.legend(fontsize=8); ax.grid(True)
+    # else:
+    #     ax.text(0.5, 0.5, "No NIS data", ha='center')
 
     plt.tight_layout()
     
@@ -91,5 +91,6 @@ def plot_tracking_results(simulation_output, est_history, nis_history, title="Tr
         save_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(save_path)
         plt.close(fig)
+        print(f"Saved plot to {save_path}")
     else:
         plt.show()

@@ -81,34 +81,39 @@ for t in all_scan_times:
     joint_tracker.predict(dt_jnt)
     joint_state["last_t"] = t
 
-    # Joint update: only possible when BOTH sensors have gated detections at same t
-    if r_meas and c_meas and joint_tracker.is_in_camera_fov():
+    # Joint update: try whenever both sensor lists are non-empty.
+    # _gate_best handles FOV / Mahalanobis gating internally.
+    joint_fired = False
+    if r_meas and c_meas:
         best_r, _ = joint_tracker._gate_best(r_meas, "radar",  GATE)
         best_c, _ = joint_tracker._gate_best(c_meas, "camera", GATE)
         if best_r is not None and best_c is not None:
             j_acc, j_nis = joint_tracker.update_joint(best_r, best_c, GATE)
+            joint_fired = True
             if j_acc:
                 joint_state["est"].append({"t": t, "N": joint_tracker.x[0,0], "E": joint_tracker.x[1,0]})
                 joint_state["nis"].append({"t": t, "nis": j_nis, "sensor": "joint"})
                 joint_state["window"].append(True)
-                if len(joint_state["window"]) > 5: joint_state["window"].pop(0)
-                if joint_state["confirmation"] is None and sum(joint_state["window"]) >= 3:
-                    joint_state["confirmation"] = t
-                continue  # skip single-sensor fallback for this time step
+            else:
+                joint_state["window"].append(False)
+            if len(joint_state["window"]) > 5: joint_state["window"].pop(0)
+            if joint_state["confirmation"] is None and sum(joint_state["window"]) >= 3:
+                joint_state["confirmation"] = t
 
-    # Joint fallback: if only one sensor fires (or joint gating failed), use sequential logic
-    r_acc_j, c_acc_j, r_nis_j, c_nis_j = joint_tracker.update_sequential(r_meas, c_meas, GATE)
-    if r_acc_j:
-        joint_state["est"].append({"t": t, "N": joint_tracker.x[0,0], "E": joint_tracker.x[1,0]})
-        joint_state["nis"].append({"t": t, "nis": r_nis_j, "sensor": "radar"})
-    if c_acc_j:
-        joint_state["est"].append({"t": t, "N": joint_tracker.x[0,0], "E": joint_tracker.x[1,0]})
-        joint_state["nis"].append({"t": t, "nis": c_nis_j, "sensor": "camera"})
+    # Fallback: single-sensor sequential update when joint couldn't fire
+    if not joint_fired:
+        r_acc_j, c_acc_j, r_nis_j, c_nis_j = joint_tracker.update_sequential(r_meas, c_meas, GATE)
+        if r_acc_j:
+            joint_state["est"].append({"t": t, "N": joint_tracker.x[0,0], "E": joint_tracker.x[1,0]})
+            joint_state["nis"].append({"t": t, "nis": r_nis_j, "sensor": "radar"})
+        if c_acc_j:
+            joint_state["est"].append({"t": t, "N": joint_tracker.x[0,0], "E": joint_tracker.x[1,0]})
+            joint_state["nis"].append({"t": t, "nis": c_nis_j, "sensor": "camera"})
 
-    joint_state["window"].append(r_acc_j)
-    if len(joint_state["window"]) > 5: joint_state["window"].pop(0)
-    if joint_state["confirmation"] is None and sum(joint_state["window"]) >= 3:
-        joint_state["confirmation"] = t
+        joint_state["window"].append(r_acc_j)
+        if len(joint_state["window"]) > 5: joint_state["window"].pop(0)
+        if joint_state["confirmation"] is None and sum(joint_state["window"]) >= 3:
+            joint_state["confirmation"] = t
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 gt, gt_t = data.ground_truth[0], data.ground_truth_times
@@ -128,7 +133,7 @@ seq_rmse,   seq_pct,   _  = compute_metrics(seq_state["est"],   seq_state["nis"]
 joint_rmse, joint_pct, _  = compute_metrics(joint_state["est"], joint_state["nis"])
 
 # ── Plots ─────────────────────────────────────────────────────────────────────
-out_dir = Path("../figures/task4")
+out_dir = Path("figures/task4")
 plot_tracking_results(data, seq_state["est"],   seq_state["nis"],
     title="Scenario B — Sequential fusion (radar + camera)",
     save_path=out_dir / "scenario_B_sequential.png")
@@ -164,14 +169,4 @@ winner_rmse = "Sequential" if seq_rmse  <= joint_rmse  else "Joint"
 winner_nis  = "Sequential" if seq_pct   >= joint_pct   else "Joint"
 print(f"  Lower RMSE        -> {winner_rmse}")
 print(f"  Better NIS        -> {winner_nis}")
-print()
-print("Explanation:")
-print("  Sequential fusion applies a radar update first, then a camera update on")
-print("  the resulting posterior. With independent noise, this is mathematically")
-print("  equivalent to the joint update at simultaneous scan times. Any difference")
-print("  arises from floating-point ordering and the number of coincident scans")
-print("  (11 of 90). The camera contributes only when the target is inside its")
-print("  500 m / 180 deg FOV, so the improvement over radar-only is modest but")
-print("  measurable: the camera's 0.15 deg bearing noise (half of radar's 0.3 deg)")
-print("  tightens the lateral position estimate when both sensors observe together.")
 print(f"{'='*w}")
