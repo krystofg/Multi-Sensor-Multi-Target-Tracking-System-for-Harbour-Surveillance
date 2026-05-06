@@ -224,13 +224,13 @@ def test_jacobian_dimensions():
 # =========================================================
 # Run manually
 # =========================================================
+if __name__ == "__main__":
+    test_radar_basic()
+    test_quadrant_east()
+    test_camera_offset()
+    test_translation_invariance()
+    test_ais_matches_radar_same_origin()
+    test_ais_offset()
+    test_jacobian_dimensions()
 
-test_radar_basic()
-test_quadrant_east()
-test_camera_offset()
-test_translation_invariance()
-test_ais_matches_radar_same_origin()
-test_ais_offset()
-test_jacobian_dimensions()
-
-print("Unit Tests for the Coordinate Frame Manager Module were Successful!")
+    print("Unit Tests for the Coordinate Frame Manager Module were Successful!")

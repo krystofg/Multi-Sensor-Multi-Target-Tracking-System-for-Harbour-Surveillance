@@ -1,172 +1,175 @@
-"""
-Task 4: Radar + Camera Fusion (Scenario B)
-Compares sequential vs. joint (centralised) EKF update architectures.
-"""
 import numpy as np
-from itertools import groupby
-from pathlib import Path
-from collections import defaultdict
-
-from coordinate_frame_manager import CoordinateFrameManager
-from ekf_tracker import MultiSensorEKF
+from ekf_tracker import EKFTracker
 from load_simulation_data import load_simulation_output
-from plot_results import plot_tracking_results
+from coordinate_frame_manager import CoordinateFrameManager
 
-# ── Setup ─────────────────────────────────────────────────────────────────────
-cfm  = CoordinateFrameManager()
+def position_rmse_over_time(x_est, xs_true):
+    """Per-step position error (not cumulative RMSE)."""
+    return np.sqrt((x_est[:, 0] - xs_true[1:, 0])**2 +
+                   (x_est[:, 1] - xs_true[1:, 1])**2)
+
+def build_R_camera(sigma_phi_c: float) -> np.ndarray:
+    """Measurement noise covariance for camera (1×1 matrix)."""
+    return np.array([[sigma_phi_c**2]])
+
+def build_R_radar(sigma_r: float, sigma_phi: float) -> np.ndarray:
+    """Measurement noise covariance matrix for radar."""
+    # Diagonal: sensors are independent
+    return np.diag([sigma_r**2, sigma_phi**2])
+
+def build_motion_model(dt: float, sigma_a: float):
+    """
+    Build the constant-velocity state transition matrix F and
+    process noise covariance Q.
+
+    Parameters
+    ----------
+    dt      : float  — time step [s]
+    sigma_a : float  — std of unmodelled acceleration [m/s^2]
+
+    Returns
+    -------
+    F : (4, 4) ndarray
+    Q : (4, 4) ndarray
+    """
+    # State transition matrix for constant-velocity model.
+    # x_{k+1} = F x_k  =>  p_{k+1} = p_k + dt*v_k,  v_{k+1} = v_k
+    F = np.array([[1, 0, dt, 0],
+                  [0, 1,  0, dt],
+                  [0, 0,  1,  0],
+                  [0, 0,  0,  1]], dtype=float)
+
+    # Process noise covariance derived from a piecewise-constant white-noise
+    # acceleration model (Singer/DWNA model):
+    #   Q = sigma_a^2 * G G^T,  with G = [dt^2/2, dt^2/2, dt, dt]^T (block)
+    q  = sigma_a ** 2
+    dt2 = dt ** 2
+    dt3 = dt ** 3
+    dt4 = dt ** 4
+    Q = q * np.array([[dt4 / 4,       0, dt3 / 2,       0],
+                       [      0, dt4 / 4,       0, dt3 / 2],
+                       [dt3 / 2,       0,     dt2,       0],
+                       [      0, dt3 / 2,       0,     dt2]])
+    return F, Q
+
+
+# ── Initialization ───────────────────────────────────────────────────────
+
 data = load_simulation_output("B")
+cfm = CoordinateFrameManager()
 
-first_true = next(m for m in data.measurements if m.sensor_id == "radar" and not m.is_false_alarm)
-iN = first_true.range_m * np.cos(first_true.bearing_rad)
-iE = first_true.range_m * np.sin(first_true.bearing_rad)
-x0 = np.array([[iN], [iE], [-2.0], [-1.0]])
-P0 = np.diag([225.0, 225.0, 25.0, 25.0])
+# --- Data Extraction & Synchronization ---
+# Filter measurements for target 0 (Scenario B is single target)
+radar_meas = [m for m in data.measurements if m.sensor_id == "radar" and m.target_id == 0]
+camera_meas = [m for m in data.measurements if m.sensor_id == "camera" and m.target_id == 0]
 
-# Two independent tracker instances — one per architecture
-seq_tracker   = MultiSensorEKF(x0=x0, P0=P0, cfm=cfm)
-joint_tracker = MultiSensorEKF(x0=x0, P0=P0, cfm=cfm)
+# Extract parameters from configs
+configs     = data.sensor_configs
+sigma_r     = configs["radar"]["sigma_r_m"]
+sigma_phi   = np.deg2rad(configs["radar"]["sigma_phi_deg"])
+sigma_phi_c = np.deg2rad(configs["camera"]["sigma_phi_deg"])
+sigma_a     = 0.1  # Process noise std (tuned parameter)
+dt          = 1.0 / configs["radar"]["rate_hz"]
 
-# Logging
-GATE = 13.82  # χ²(2) at 99.9%
+# Synchronize: Use radar times as the primary timeline
+radar_times = [m.time for m in radar_meas]
+zs          = np.array([[m.range_m, m.bearing_rad] for m in radar_meas])
+zs_radar    = zs
 
-def make_state(): return dict(window=[], est=[], nis=[], confirmation=None, last_t=first_true.time)
+# Match each radar scan to the nearest camera measurement
+zs_cam = np.array([min(camera_meas, key=lambda m: abs(m.time - t)).bearing_rad for t in radar_times])
 
-seq_state   = make_state()
-joint_state = make_state()
+N = len(zs)
 
-# ── Separate measurements by sensor ─────────────────────────────────────────
-for m in data.measurements:
-    if m.sensor_id == "gnss":
-        cfm.update_vessel_pos(m)
+# --- Initialization ---
+# Convert first radar measurement to Cartesian for initialisation
+r0, phi0 = zs[0]
+x_init = np.array([[r0 * np.cos(phi0)], 
+                   [r0 * np.sin(phi0)], 
+                   [0.0], 
+                   [0.0]])
 
-radar_meas  = [m for m in data.measurements if m.sensor_id == "radar"  and m.time >= first_true.time]
-camera_meas = [m for m in data.measurements if m.sensor_id == "camera" and m.time >= first_true.time]
+# Initial covariance: high position uncertainty, high velocity uncertainty
+P_init = np.diag([sigma_r**2, sigma_r**2, 50.0**2, 50.0**2])
 
-# Build scan-time buckets: {rounded_time: {'radar': [...], 'camera': [...]}}
-scan_buckets = defaultdict(lambda: {"radar": [], "camera": []})
-for m in radar_meas:
-    scan_buckets[round(m.time, 4)]["radar"].append(m)
-for m in camera_meas:
-    scan_buckets[round(m.time, 4)]["camera"].append(m)
+R = build_R_radar(sigma_r, sigma_phi)
+F, Q = build_motion_model(dt, sigma_a)
 
-all_scan_times = sorted(scan_buckets)
+# ── Storage ───────────────────────────────────────────────────────────────────
+x_est      = np.zeros((N, 4))     # filtered state estimates
+P_est      = np.zeros((N, 4, 4))  # filtered covariances
+innov_hist = np.zeros((N, 2))     # innovation history
+S_hist     = np.zeros((N, 2, 2))
 
-# ── Processing loop ───────────────────────────────────────────────────────────
-for t in all_scan_times:
-    r_meas = scan_buckets[t]["radar"]
-    c_meas = scan_buckets[t]["camera"]
+# ── Initialize EKF tracker ────────────────────────────────────────────────────
+ekf = EKFTracker(x_init, P_init, cfm, sigma_a)
 
-    # ── Sequential tracker ────────────────────────────────────────────────────
-    dt_seq = t - seq_state["last_t"]
-    seq_tracker.predict(dt_seq)
-    seq_state["last_t"] = t
+# ── Radar only EKF ─────────────────────────────────────────────────────────────
+x = x_init.copy()
+P = P_init.copy()
 
-    r_acc, c_acc, r_nis, c_nis = seq_tracker.update_sequential(r_meas, c_meas, GATE)
-    any_hit = r_acc or c_acc
+for k in range(N):
+    # Step 1: Prediction — propagate state and covariance forward by dt
+    x, P = ekf.predict(x, P, F, Q)
 
-    if r_acc:
-        seq_state["est"].append({"t": t, "N": seq_tracker.x[0,0], "E": seq_tracker.x[1,0]})
-        seq_state["nis"].append({"t": t, "nis": r_nis, "sensor": "radar"})
-    if c_acc:
-        seq_state["est"].append({"t": t, "N": seq_tracker.x[0,0], "E": seq_tracker.x[1,0]})
-        seq_state["nis"].append({"t": t, "nis": c_nis, "sensor": "camera"})
+    # Step 2: Update with radar measurement zs[k]
+    x, P, innov, S = ekf.update_radar(x, P, zs[k], R)
 
-    seq_state["window"].append(r_acc)  # confirmation driven by radar (primary miss clock)
-    if len(seq_state["window"]) > 5: seq_state["window"].pop(0)
-    if seq_state["confirmation"] is None and sum(seq_state["window"]) >= 3:
-        seq_state["confirmation"] = t
+    # Store results
+    x_est[k]      = x.flatten()
+    P_est[k]      = P
+    innov_hist[k] = innov.flatten()
+    S_hist[k]     = S
 
-    # ── Joint tracker ─────────────────────────────────────────────────────────
-    dt_jnt = t - joint_state["last_t"]
-    joint_tracker.predict(dt_jnt)
-    joint_state["last_t"] = t
+print("Radar only EKF loop complete.")
 
-    # Joint update: try whenever both sensor lists are non-empty.
-    # _gate_best handles FOV / Mahalanobis gating internally.
-    joint_fired = False
-    if r_meas and c_meas:
-        best_r, _ = joint_tracker._gate_best(r_meas, "radar",  GATE)
-        best_c, _ = joint_tracker._gate_best(c_meas, "camera", GATE)
-        if best_r is not None and best_c is not None:
-            j_acc, j_nis = joint_tracker.update_joint(best_r, best_c, GATE)
-            joint_fired = True
-            if j_acc:
-                joint_state["est"].append({"t": t, "N": joint_tracker.x[0,0], "E": joint_tracker.x[1,0]})
-                joint_state["nis"].append({"t": t, "nis": j_nis, "sensor": "joint"})
-                joint_state["window"].append(True)
-            else:
-                joint_state["window"].append(False)
-            if len(joint_state["window"]) > 5: joint_state["window"].pop(0)
-            if joint_state["confirmation"] is None and sum(joint_state["window"]) >= 3:
-                joint_state["confirmation"] = t
+# ── Sequential Fusion ────────────────────────────────────────────────────────────────
+r0, phi0 = zs_radar[0]
+x_init   = np.array([[r0 * np.cos(phi0)], [r0 * np.sin(phi0)], [0.0], [0.0]])
+P_init   = np.diag([sigma_r**2, sigma_r**2, 50.0**2, 50.0**2])
+R_cam    = build_R_camera(sigma_phi_c)
 
-    # Fallback: single-sensor sequential update when joint couldn't fire
-    if not joint_fired:
-        r_acc_j, c_acc_j, r_nis_j, c_nis_j = joint_tracker.update_sequential(r_meas, c_meas, GATE)
-        if r_acc_j:
-            joint_state["est"].append({"t": t, "N": joint_tracker.x[0,0], "E": joint_tracker.x[1,0]})
-            joint_state["nis"].append({"t": t, "nis": r_nis_j, "sensor": "radar"})
-        if c_acc_j:
-            joint_state["est"].append({"t": t, "N": joint_tracker.x[0,0], "E": joint_tracker.x[1,0]})
-            joint_state["nis"].append({"t": t, "nis": c_nis_j, "sensor": "camera"})
+x_seq   = np.zeros((N, 4))
+P_seq   = np.zeros((N, 4, 4))
 
-        joint_state["window"].append(r_acc_j)
-        if len(joint_state["window"]) > 5: joint_state["window"].pop(0)
-        if joint_state["confirmation"] is None and sum(joint_state["window"]) >= 3:
-            joint_state["confirmation"] = t
+x = x_init.copy()
+P = P_init.copy()
 
-# ── Metrics ───────────────────────────────────────────────────────────────────
-gt, gt_t = data.ground_truth[0], data.ground_truth_times
+for k in range(N):
+    # Step 1: Predict
+    x, P = ekf.predict(x, P, F, Q)
 
-def compute_metrics(est_history, nis_history, t_transient=20.0):
-    ss_errors = []
-    for e in est_history:
-        if e["t"] <= t_transient: continue
-        idx = np.argmin(np.abs(gt_t - e["t"]))
-        ss_errors.append(np.sqrt((e["N"] - gt[idx, 0])**2 + (e["E"] - gt[idx, 1])**2))
-    rmse = float(np.sqrt(np.mean(np.square(ss_errors)))) if ss_errors else np.nan
-    nis_vals = np.array([n["nis"] for n in nis_history])
-    pct_nis  = float((nis_vals < 5.99).mean() * 100) if len(nis_vals) else 0.0
-    return rmse, pct_nis, ss_errors
+    # Step 2: Radar update
+    x, P, _, _ = ekf.update_radar(x, P, zs_radar[k], R)
 
-seq_rmse,   seq_pct,   _  = compute_metrics(seq_state["est"],   seq_state["nis"])
-joint_rmse, joint_pct, _  = compute_metrics(joint_state["est"], joint_state["nis"])
+    # Step 3: Camera update (bearing only)
+    x, P, _, _ = ekf.update_camera(x, P, zs_cam[k], R_cam)
 
-# ── Plots ─────────────────────────────────────────────────────────────────────
-out_dir = Path("figures/task4")
-plot_tracking_results(data, seq_state["est"],   seq_state["nis"],
-    title="Scenario B — Sequential fusion (radar + camera)",
-    save_path=out_dir / "scenario_B_sequential.png")
-plot_tracking_results(data, joint_state["est"], joint_state["nis"],
-    title="Scenario B — Joint (centralised) fusion (radar + camera)",
-    save_path=out_dir / "scenario_B_joint.png")
 
-# ── Qualification Report ──────────────────────────────────────────────────────
-radar_dt   = 1 / 0.3
-scan_limit = 5 * radar_dt  # 5-scan confirmation deadline
+    x_seq[k] = x.flatten()
+    P_seq[k] = P
 
-def confirm_ok(state):
-    ct = state["confirmation"]
-    return ct is not None and ct <= first_true.time + scan_limit
+print("Sequential fusion EKF complete.")
 
-w = 46
-print(f"\n{'='*w}")
-print(f"  SCENARIO B  QUALIFICATION REPORT")
-print(f"{'='*w}")
-print(f"  {'Metric':<28}  {'Sequential':>8}  {'Joint':>8}")
-print(f"  {'-'*28}  {'-'*8}  {'-'*8}")
-print(f"  {'Confirmation (3-of-5)':<28}  "
-      f"{'PASS' if confirm_ok(seq_state)   else 'FAIL':>8}  "
-      f"{'PASS' if confirm_ok(joint_state) else 'FAIL':>8}")
-print(f"  {'RMSE [m]  (limit 12 m)':<28}  "
-      f"{seq_rmse:>8.2f}  {joint_rmse:>8.2f}")
-print(f"  {'NIS in 95% bounds [%]':<28}  "
-      f"{seq_pct:>8.1f}  {joint_pct:>8.1f}")
-print(f"{'='*w}")
-print()
-print("Architecture comparison:")
-winner_rmse = "Sequential" if seq_rmse  <= joint_rmse  else "Joint"
-winner_nis  = "Sequential" if seq_pct   >= joint_pct   else "Joint"
-print(f"  Lower RMSE        -> {winner_rmse}")
-print(f"  Better NIS        -> {winner_nis}")
-print(f"{'='*w}")
+# ── Centralised Fusion ───────────────────────────────────
+x = x_init.copy()
+P = P_init.copy()
+
+x_cen   = np.zeros((N, 4))
+P_cen   = np.zeros((N, 4, 4))
+innov_cen = np.zeros((N, 3))
+S_cen     = np.zeros((N, 3, 3))
+
+for k in range(N):
+    # Step 1: Predict
+    x, P = ekf.predict(x, P, F, Q)
+
+    # Step 2: Joint update
+    x, P, innov, S = ekf.update_joint(x, P, zs_radar[k], zs_cam[k], R, R_cam)
+
+    x_cen[k]     = x.flatten()
+    P_cen[k]     = P
+    innov_cen[k] = innov.flatten()
+    S_cen[k]     = S
+
+print("Centralised fusion EKF complete.")
