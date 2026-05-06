@@ -62,11 +62,8 @@ class EKFTracker:
         innov : (2,)   innovation vector (for diagnostics)
         S     : (2,2)  innovation covariance
         """
-        # Step 1: Linearise — Jacobian at the predicted state
-        H = self._H_jacobian_radar(x_pred)
-
-        # Step 2: Predicted measurement via the nonlinear function
-        z_pred = self._h_radar(x_pred)
+        # Step 1 & 2: Get predicted measurement and Jacobian from CFM
+        z_pred, H = self.cfm.get_h_and_H(x_pred, "radar")
 
         # Step 3: Innovation — difference between actual and predicted measurement.
         #         Wrap the bearing component to keep it in (-pi, pi].
@@ -112,11 +109,10 @@ class EKFTracker:
         innov : float  bearing innovation [rad]
         S_c   : (1,1)  innovation covariance
         """
-        # Step 1: Linearise — Jacobian at the predicted state
-        H_c = self._H_jacobian_camera(x_pred)
-
-        # Step 2: Predicted measurement via the nonlinear function
-        z_pred = self._h_camera(x_pred)
+        # Step 1 & 2: Get predicted measurement and Jacobian from CFM
+        h_full, H_full = self.cfm.get_h_and_H(x_pred, "camera")
+        z_pred = h_full[1, 0]     # bearing only
+        H_c    = H_full[1:2, :]  # bearing row dh/dx
 
         # Step 3: Innovation — difference between actual and predicted measurement.
         #         Wrap the bearing to keep it in (-pi, pi].
@@ -167,17 +163,15 @@ class EKFTracker:
                             [z_c]])
 
         # Step 2: build the joint predicted measurement h_joint (3,1)
-        h_r = self._h_radar(x_pred)   # (2, 1)
-        h_c = self._h_camera(x_pred)  # float
-        h_joint = np.array([[h_r[0, 0]], 
-                            [h_r[1, 0]], 
-                            [h_c]])
+        h_r_full, H_r_full = self.cfm.get_h_and_H(x_pred, "radar")
+        h_c_full, H_c_full = self.cfm.get_h_and_H(x_pred, "camera")
+
+        h_joint = np.array([[h_r_full[0, 0]], 
+                            [h_r_full[1, 0]], 
+                            [h_c_full[1, 0]]])
 
         # Step 3: build the joint Jacobian H_joint (3×4)
-        #              stack H_radar and H_camera vertically
-        H_radar  = self._H_jacobian_radar(x_pred)   # (2, 4)
-        H_camera = self._H_jacobian_camera(x_pred)  # (1, 4)
-        H_joint  = np.vstack([H_radar, H_camera])
+        H_joint = np.vstack([H_r_full, H_c_full[1:2, :]])
 
         # Step 4: build the block-diagonal joint noise covariance R_joint (3×3)
         R_joint = np.zeros((3, 3))
