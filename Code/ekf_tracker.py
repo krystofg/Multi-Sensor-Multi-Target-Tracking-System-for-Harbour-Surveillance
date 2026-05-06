@@ -91,7 +91,7 @@ class EKFTracker:
         P_upd = IKH @ P_pred @ IKH.T + K @ R @ K.T
 
         return x_upd, P_upd, innov, S
-    
+
     def _H_jacobian_radar(self, x: np.ndarray) -> np.ndarray:
         """
         Jacobian of h_radar with respect to the state x.
@@ -104,17 +104,24 @@ class EKFTracker:
         -------
         H : (2, 4) ndarray
         """
+        x = x.flatten()  # handles (4,) and (4,1)
+
         px, py = x[0], x[1]
-        r2 = px**2 + py**2   # r squared
-        r  = np.sqrt(r2)      # r
+
+        r2 = px**2 + py**2
+        if r2 < 1e-8:   # avoid division by zero
+            r2 = 1e-8
+
+        r = np.sqrt(r2)
 
         H = np.zeros((2, 4))
-        # d(range)/d(px), d(range)/d(py)  — velocity components are zero
-        H[0, 0] =  px / r
-        H[0, 1] =  py / r
-        # d(bearing)/d(px), d(bearing)/d(py)
+
+        H[0, 0] = px / r
+        H[0, 1] = py / r
+
         H[1, 0] = -py / r2
-        H[1, 1] =  px / r2
+        H[1, 1] = px / r2
+
         return H
 
     def _h_radar(self, x: np.ndarray) -> np.ndarray:
