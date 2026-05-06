@@ -297,4 +297,52 @@ class EKFTracker:
         """Wrap an angle to the interval (-pi, pi]."""
         return (angle + np.pi) % (2 * np.pi) - np.pi
 
+# Helper functions for evaluation and measurement noise covariance construction
+def position_rmse_over_time(x_est, xs_true):
+    """Per-step position error (not cumulative RMSE)."""
+    return np.sqrt((x_est[:, 0] - xs_true[1:, 0])**2 +
+                   (x_est[:, 1] - xs_true[1:, 1])**2)
 
+def build_R_camera(sigma_phi_c: float) -> np.ndarray:
+    """Measurement noise covariance for camera (1×1 matrix)."""
+    return np.array([[sigma_phi_c**2]])
+
+def build_R_radar(sigma_r: float, sigma_phi: float) -> np.ndarray:
+    """Measurement noise covariance matrix for radar."""
+    # Diagonal: sensors are independent
+    return np.diag([sigma_r**2, sigma_phi**2])
+
+def build_motion_model(dt: float, sigma_a: float):
+    """
+    Build the constant-velocity state transition matrix F and
+    process noise covariance Q.
+
+    Parameters
+    ----------
+    dt      : float  — time step [s]
+    sigma_a : float  — std of unmodelled acceleration [m/s^2]
+
+    Returns
+    -------
+    F : (4, 4) ndarray
+    Q : (4, 4) ndarray
+    """
+    # State transition matrix for constant-velocity model.
+    # x_{k+1} = F x_k  =>  p_{k+1} = p_k + dt*v_k,  v_{k+1} = v_k
+    F = np.array([[1, 0, dt, 0],
+                  [0, 1,  0, dt],
+                  [0, 0,  1,  0],
+                  [0, 0,  0,  1]], dtype=float)
+
+    # Process noise covariance derived from a piecewise-constant white-noise
+    # acceleration model (Singer/DWNA model):
+    #   Q = sigma_a^2 * G G^T,  with G = [dt^2/2, dt^2/2, dt, dt]^T (block)
+    q  = sigma_a ** 2
+    dt2 = dt ** 2
+    dt3 = dt ** 3
+    dt4 = dt ** 4
+    Q = q * np.array([[dt4 / 4,       0, dt3 / 2,       0],
+                       [      0, dt4 / 4,       0, dt3 / 2],
+                       [dt3 / 2,       0,     dt2,       0],
+                       [      0, dt3 / 2,       0,     dt2]])
+    return F, Q
