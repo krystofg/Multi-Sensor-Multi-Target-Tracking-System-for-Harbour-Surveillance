@@ -1,8 +1,15 @@
+import sys
 from pathlib import Path
 from itertools import groupby
 from matplotlib import pyplot as plt
 import numpy as np
-from Code.T2.coordinate_frame_manager import CoordinateFrameManager
+
+# Add project root to sys.path to handle moved files and allow direct execution
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+from coordinate_frame_manager import CoordinateFrameManager
 from harbour_sim_output.load_simulation_data import load_simulation_output
 
 # =============================================================================
@@ -67,7 +74,7 @@ class EKFTracker:
         y[1, 0] = (y[1, 0] + np.pi) % (2 * np.pi) - np.pi   # wrap bearing
 
         S   = H @ self.P @ H.T + R
-        nis = float(y.T @ np.linalg.inv(S) @ y)
+        nis = (y.T @ np.linalg.inv(S) @ y).item()
 
         if nis > gate_limit:
             return False, nis
@@ -167,7 +174,7 @@ for scan_t, scan_group in groupby(radar_meas, key=lambda m: round(m.time, 1)):
         y = z - hx
         y[1, 0] = (y[1, 0] + np.pi) % (2 * np.pi) - np.pi
         S = H @ tracker.P @ H.T + R
-        nis = float(y.T @ np.linalg.inv(S) @ y)
+        nis = (y.T @ np.linalg.inv(S) @ y).item()
         
         if nis < best_nis:
             best_nis = nis
@@ -268,7 +275,7 @@ ax.legend(fontsize=8); ax.grid(True)
 plt.tight_layout()
 
 # Save the figure
-out_dir = Path("figures/task3")
+out_dir = project_root / "figures" / "task3"
 out_dir.mkdir(parents=True, exist_ok=True)
 fig.savefig(out_dir / f"scenario_{output_A.scenario_name}.png")
 

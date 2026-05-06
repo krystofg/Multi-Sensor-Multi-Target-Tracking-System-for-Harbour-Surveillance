@@ -43,8 +43,12 @@ class SimulationOutput:
     vessel_times      : np.ndarray               # (T_gnss,) GNSS times
     sensor_configs    : Dict                     # parameter summary
 
-def load_simulation_output(scenario_name: str, base_dir: str = "harbour_sim_output") -> SimulationOutput:
+def load_simulation_output(scenario_name: str, base_dir: str = None) -> SimulationOutput:
     """Loads a SimulationOutput object from a saved JSON file."""
+    if base_dir is None:
+        # Default to the directory where this script is located
+        base_dir = Path(__file__).parent
+    
     filepath = Path(base_dir) / f"scenario_{scenario_name}.json"
     with open(filepath, 'r') as f:
         data = json.load(f)
