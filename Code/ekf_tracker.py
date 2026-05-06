@@ -134,6 +134,43 @@ class EKFTracker:
         phi = np.arctan2(py, px)        # bearing
         return np.array([[r], [phi]])
 
+    # ── Camera Jacobian ─────────────────────────────────────────────────────────
+    def _h_camera(self, x: np.ndarray) -> float:
+        """
+        Camera measurement function: bearing angle to the target.
+
+        Parameters
+        ----------
+        x : (4,) ndarray  — state [px, py, vx, vy]
+
+        Returns
+        -------
+        phi_c : float  — predicted bearing [rad]
+        """
+        # TODO
+        pass
+
+
+    def _H_jacobian_camera(self, x: np.ndarray) -> np.ndarray:
+        """
+        Jacobian of h_camera with respect to x.
+
+        Returns
+        -------
+        H_c : (1, 4) ndarray
+        """
+        # TODO
+        H_c = np.zeros((1, 4))
+        # --- your code here ---
+        return H_c
+
+
+    def _build_R_camera(self, sigma_phi_c: float) -> np.ndarray:
+        """Measurement noise covariance for camera (1×1 matrix)."""
+        # TODO
+        pass
+
+
     def _wrap_angle(self, angle: float) -> np.ndarray:
         """Wrap an angle to the interval (-pi, pi]."""
         return (angle + np.pi) % (2 * np.pi) - np.pi
