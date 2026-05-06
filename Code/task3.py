@@ -43,7 +43,7 @@ for t, group in groupby(radar_meas, key=lambda m: round(m.time, 1)):
 
     # Gating
     best_nis, best_m = np.inf, None
-    gate = 13.82
+    gate = 17.00        # gate detection within 17 sec
     
     for m in group:
         hx, H = cfm.get_h_and_H(tracker.x, m.sensor_id)
@@ -57,17 +57,21 @@ for t, group in groupby(radar_meas, key=lambda m: round(m.time, 1)):
         if nis < best_nis:
             best_nis, best_m = nis, m
 
+    if best_m is not None:
+        nis_history.append({'t': t, 'nis': best_nis})
+
     # Update
     hit = False
     if best_m and best_nis <= gate:
         tracker.update(best_m, gate_limit=gate)
         hit = True
         est_history.append({'t': t, 'N': tracker.x[0,0], 'E': tracker.x[1,0]})
-        nis_history.append({'t': t, 'nis': best_nis})
 
     # Confirmation window (3-of-5)
     scan_window.append(hit)
-    if len(scan_window) > 5: scan_window.pop(0)
+    if len(scan_window) > 5: 
+        scan_window.pop(0)
+
     if confirmation_time is None and sum(scan_window) >= 3:
         confirmation_time = t
 
