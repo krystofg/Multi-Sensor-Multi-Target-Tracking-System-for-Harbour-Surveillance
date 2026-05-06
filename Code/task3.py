@@ -38,6 +38,7 @@ for m in gnss_meas:
 
 # Process radar scans
 for t, group in groupby(radar_meas, key=lambda m: round(m.time, 1)):
+
     dt = t - last_t
     if dt > 0:
         F = np.array([[1, 0, dt, 0], [0, 1, 0, dt], [0, 0, 1, 0], [0, 0, 0, 1]], dtype=float)
@@ -50,11 +51,11 @@ for t, group in groupby(radar_meas, key=lambda m: round(m.time, 1)):
             [    0, dt3/2,     0,   dt2]
         ])
         tracker.x, tracker.P = tracker.predict(tracker.x, tracker.P, F, Q)
-    last_t = t
+        last_t = t
 
     # Gating
     best_nis, best_m = np.inf, None
-    gate = 17.00        # gate detection within 17 sec
+    gate = 5.991       # χ²(2, 95%) = 5.991
     
     for m in group:
         hx, H = cfm.get_h_and_H(tracker.x, m.sensor_id)
@@ -78,7 +79,8 @@ for t, group in groupby(radar_meas, key=lambda m: round(m.time, 1)):
         R = cfm.R_specs["radar"]
         tracker.x, tracker.P, _, _ = tracker.update(tracker.x, tracker.P, z, R)
         hit = True
-        est_history.append({'t': t, 'N': tracker.x[0,0], 'E': tracker.x[1,0]})
+        
+    est_history.append({'t': t, 'N': tracker.x[0,0], 'E': tracker.x[1,0]})
 
     # Confirmation window (3-of-5)
     scan_window.append(hit)
@@ -92,17 +94,20 @@ for t, group in groupby(radar_meas, key=lambda m: round(m.time, 1)):
 gt, gt_t = data.ground_truth[0], data.ground_truth_times
 ss_errors = [np.sqrt((e['N'] - gt[np.argmin(np.abs(gt_t - e['t'])), 0])**2 + 
                      (e['E'] - gt[np.argmin(np.abs(gt_t - e['t'])), 1])**2)
-             for e in est_history if e['t'] > 20.0]
+             for e in est_history if e['t'] > 12.0] 
 
 rmse = float(np.sqrt(np.mean(np.square(ss_errors)))) if ss_errors else 0.0
 pct_nis = float((np.array([n['nis'] for n in nis_history]) < 5.99).mean() * 100) if nis_history else 0.0
 
 # Dashboard
 plot_tracking_results(
-    data, est_history, nis_history,
+    data, est_history, nis_history, pct_nis,
     title="Scenario A — Single target, radar only",
     save_path= "figures/task3/scenario_A.png"
 )
+
+print("Last est time:", est_history[-1]['t'])
+print("Total duration:", est_history[-1]['t'] - est_history[0]['t'])
 
 # Report
 confirm_ok = (confirmation_time is not None and confirmation_time <= first_true.time + 5*(1/0.3))

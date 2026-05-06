@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 
-def plot_tracking_results(simulation_output, est_history, nis_history, title="Tracking Results", target_id=0, save_path=None):
+def plot_tracking_results(simulation_output, est_history, nis_history, pct_nis, title="Tracking Results", target_id=0, save_path=None):
     """
     Generates a 4-panel dashboard for tracking performance.
     """
@@ -30,7 +30,8 @@ def plot_tracking_results(simulation_output, est_history, nis_history, title="Tr
     est_n = [e['N'] for e in est_history]
     ax.plot(est_e, est_n, 'r-', lw=1.5, label="EKF track")
     
-    ax.plot(0, 0, 'y*', ms=12, label="Radar (origin)")
+
+    ax.plot(0, 0, 'o', ms=12, label="Radar (origin)")
     ax.set_xlabel("East [m]"); ax.set_ylabel("North [m]")
     ax.axis('equal'); ax.grid(True); ax.legend(fontsize=8)
 
@@ -50,9 +51,20 @@ def plot_tracking_results(simulation_output, est_history, nis_history, title="Tr
             ss_errors.append(err)
         
         if ss_errors:
-            ax.plot(ss_errors, 'g', lw=1.2)
+            ss_t = [e['t'] for e in est_history]
+            ss_errors = []
+
+            for e in est_history:
+                if e['t'] <= 20.0:
+                    continue
+                idx = np.argmin(np.abs(gt_t - e['t']))
+                err = np.sqrt((e['N'] - gt[idx, 0])**2 + (e['E'] - gt[idx, 1])**2)
+                ss_errors.append(err)
+
+            ax.plot(ss_t[:len(ss_errors)], ss_errors, 'g', lw=1.2)
+
             ax.axhline(12.0, color='r', ls='--', label="Limit 12 m")
-            ax.set_xlabel("Scan index"); ax.set_ylabel("Error [m]")
+            ax.set_xlabel("Time [s]"); ax.set_ylabel("Error [m]")
             ax.legend(); ax.grid(True)
         else:
             ax.text(0.5, 0.5, "No steady-state data", ha='center')
@@ -68,21 +80,14 @@ def plot_tracking_results(simulation_output, est_history, nis_history, title="Tr
     ax.plot(nis_t, nis_vals, 'b.', ms=4)
     
     chi2_lo, chi2_hi = 0.103, 5.991
+    t = np.array([n['t'] for n in nis_history])
+    ax.plot([n['t'] for n in nis_history], nis_vals, 'b.', ms=4, label=f"NIS ({pct_nis:.1f} % inside 95 % bounds)")
     ax.axhline(chi2_hi, color='r', ls='--', label=f"χ²(2) 95% upper = {chi2_hi}")
     ax.axhline(chi2_lo, color='orange', ls='--', label=f"χ²(2) 95% lower = {chi2_lo}")
+    ax.fill_between(t, chi2_lo, chi2_hi, alpha=0.07, color='green')
     ax.set_xlabel("Time [s]"); ax.set_ylabel("NIS")
+    ax.set_ylim(0, 10)
     ax.legend(fontsize=8); ax.grid(True)
-
-    # # 4. NIS Histogram
-    # ax = axes[1, 1]
-    # ax.set_title("NIS Histogram")
-    # if nis_vals:
-    #     ax.hist(nis_vals, bins=20, color='steelblue', edgecolor='white')
-    #     ax.axvline(chi2_hi, color='r', ls='--', label=f"95% upper = {chi2_hi:.2f}")
-    #     ax.set_xlabel("NIS"); ax.set_ylabel("Count")
-    #     ax.legend(fontsize=8); ax.grid(True)
-    # else:
-    #     ax.text(0.5, 0.5, "No NIS data", ha='center')
 
     plt.tight_layout()
     
