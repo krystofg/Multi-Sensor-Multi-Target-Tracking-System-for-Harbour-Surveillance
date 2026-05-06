@@ -38,7 +38,18 @@ for m in gnss_meas:
 
 # Process radar scans
 for t, group in groupby(radar_meas, key=lambda m: round(m.time, 1)):
-    tracker.predict(t - last_t)
+    dt = t - last_t
+    if dt > 0:
+        F = np.array([[1, 0, dt, 0], [0, 1, 0, dt], [0, 0, 1, 0], [0, 0, 0, 1]], dtype=float)
+        q = tracker.sigma_a**2
+        dt2, dt3, dt4 = dt**2, dt**3, dt**4
+        Q = q * np.array([
+            [dt4/4,     0, dt3/2,     0],
+            [    0, dt4/4,     0, dt3/2],
+            [dt3/2,     0,   dt2,     0],
+            [    0, dt3/2,     0,   dt2]
+        ])
+        tracker.x, tracker.P = tracker.predict(tracker.x, tracker.P, F, Q)
     last_t = t
 
     # Gating
@@ -60,7 +71,9 @@ for t, group in groupby(radar_meas, key=lambda m: round(m.time, 1)):
     # Update
     hit = False
     if best_m and best_nis <= gate:
-        tracker.update(best_m, gate_limit=gate)
+        z = np.array([[best_m.range_m], [best_m.bearing_rad]])
+        R = cfm.R_specs["radar"]
+        tracker.x, tracker.P, _, _ = tracker.update(tracker.x, tracker.P, z, R)
         hit = True
         est_history.append({'t': t, 'N': tracker.x[0,0], 'E': tracker.x[1,0]})
         nis_history.append({'t': t, 'nis': best_nis})
