@@ -2,95 +2,110 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 
-def plot_tracking_results(simulation_output, est_history, nis_history, pct_nis, title="Tracking Results", target_id=0, save_path=None):
-    """
-    Generates a 4-panel dashboard for tracking performance.
-    """
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle(title, fontsize=13)
+def plot_tracking_results(simulation_output, est_history, nis_history, pct_nis,
+                          title="Tracking Results", target_id=0, save_path=None):
 
-    # 1. Trajectory (GT, Raw Radar, EKF Track)
-    ax = axes[0, 0]
-    ax.set_title("2-D NED Trajectory")
-    
-    # GT Trajectory
+    fig = plt.figure(figsize=(16, 10))
+    gs = fig.add_gridspec(2, 2, width_ratios=[1.4, 1])
+
+    fig.suptitle(title, fontsize=14)
+
+    # =========================================================
+    # 1. ZOOMED TRAJECTORY (LEFT SIDE, SPANS BOTH ROWS)
+    # =========================================================
+    ax_traj = fig.add_subplot(gs[:, 0])
+    ax_traj.set_title("2D NED Trajectory of Single Target Using EKF (Radar Measurements Only)")
+
+    # Ground truth
     for tid, gt in simulation_output.ground_truth.items():
         color = 'k' if tid == target_id else 'gray'
-        alpha = 0.7 if tid == target_id else 0.3
-        ax.plot(gt[:, 1], gt[:, 0], color=color, ls='--', alpha=alpha, label=f"GT (Target {tid})")
-    
-    # Raw Radar
+        ax_traj.plot(gt[:, 1], gt[:, 0], '--', color=color,
+                     label=f"Ground Truth Trajectory (Target {tid})")
+
+    # Radar points
     raw_radar = [m for m in simulation_output.measurements if m.sensor_id == "radar"]
     raw_e = [m.range_m * np.sin(m.bearing_rad) for m in raw_radar]
     raw_n = [m.range_m * np.cos(m.bearing_rad) for m in raw_radar]
-    ax.scatter(raw_e, raw_n, c='steelblue', s=6, alpha=0.15, label="Raw radar")
-    
-    # EKF Track
+    ax_traj.scatter(raw_e, raw_n, c='steelblue', s=6, label="Raw Radar Measurements")
+
+    # EKF estimate
     est_e = [e['E'] for e in est_history]
     est_n = [e['N'] for e in est_history]
-    ax.plot(est_e, est_n, 'r-', lw=1.5, label="EKF track")
-    
+    ax_traj.plot(est_e, est_n, 'r-', label="EKF Track")
 
-    ax.plot(0, 0, 'o', ms=12, label="Radar (origin)")
-    ax.set_xlabel("East [m]"); ax.set_ylabel("North [m]")
-    ax.axis('equal'); ax.grid(True); ax.legend(fontsize=8)
+    ax_traj.set_xlabel("East [m]")
+    ax_traj.set_ylabel("North [m]")
+    ax_traj.grid(True)
+    ax_traj.legend(fontsize=8)
 
-    # 2. Steady-State RMSE
-    ax = axes[0, 1]
-    ax.set_title(f"Steady-State Position Error (Target {target_id}, t > 20s)")
-    
+    # 🔥 ZOOM automatically around trajectory
+    margin = 10
+    ax_traj.set_xlim(min(est_e) - margin, max(est_e) + margin)
+    ax_traj.set_ylim(min(est_n) - margin, max(est_n) + margin)
+
+    # =========================================================
+    # 2. STEADY-STATE POSITION ERROR (TOP RIGHT)
+    # =========================================================
+    ax_err = fig.add_subplot(gs[0, 1])
+    ax_err.set_title("Steady-State Position Error (t > 20 s)")
+
     if target_id in simulation_output.ground_truth:
+
         gt_t = simulation_output.ground_truth_times
         gt = simulation_output.ground_truth[target_id]
-        
+
+        ss_t = []
         ss_errors = []
+
         for e in est_history:
-            if e['t'] <= 20.0: continue
+            if e['t'] <= 20.0:
+                continue
+
             idx = np.argmin(np.abs(gt_t - e['t']))
-            err = np.sqrt((e['N'] - gt[idx, 0])**2 + (e['E'] - gt[idx, 1])**2)
+            err = np.sqrt((e['N'] - gt[idx, 0])**2 +
+                          (e['E'] - gt[idx, 1])**2)
+
+            ss_t.append(e['t'])
             ss_errors.append(err)
-        
+
         if ss_errors:
-            ss_t = [e['t'] for e in est_history]
-            ss_errors = []
+            ax_err.plot(ss_t, ss_errors, 'g', lw=2, label="Position Error")
+            ax_err.axhline(12.0, color='r', ls='--', label="Limit 12 m")
 
-            for e in est_history:
-                if e['t'] <= 20.0:
-                    continue
-                idx = np.argmin(np.abs(gt_t - e['t']))
-                err = np.sqrt((e['N'] - gt[idx, 0])**2 + (e['E'] - gt[idx, 1])**2)
-                ss_errors.append(err)
+        ax_err.set_xlabel("Time [s]")
+        ax_err.set_ylabel("Error [m]")
+        ax_err.grid(True)
+        ax_err.legend(fontsize=8)
 
-            ax.plot(ss_t[:len(ss_errors)], ss_errors, 'g', lw=1.2)
+    # =========================================================
+    # 3. NIS (BOTTOM RIGHT)
+    # =========================================================
+    ax_nis = fig.add_subplot(gs[1, 1])
+    ax_nis.set_title("NIS Consistency")
 
-            ax.axhline(12.0, color='r', ls='--', label="Limit 12 m")
-            ax.set_xlabel("Time [s]"); ax.set_ylabel("Error [m]")
-            ax.legend(); ax.grid(True)
-        else:
-            ax.text(0.5, 0.5, "No steady-state data", ha='center')
-    else:
-        ax.text(0.5, 0.5, f"Target {target_id} not in GT", ha='center')
-
-
-    # 3. NIS Consistency
-    ax = axes[1, 0]
-    ax.set_title("NIS Consistency")
     nis_t = [n['t'] for n in nis_history]
     nis_vals = [n['nis'] for n in nis_history]
-    ax.plot(nis_t, nis_vals, 'b.', ms=4)
-    
-    chi2_lo, chi2_hi = 0.103, 5.991
-    t = np.array([n['t'] for n in nis_history])
-    ax.plot([n['t'] for n in nis_history], nis_vals, 'b.', ms=4, label=f"NIS ({pct_nis:.1f} % inside 95 % bounds)")
-    ax.axhline(chi2_hi, color='r', ls='--', label=f"χ²(2) 95% upper = {chi2_hi}")
-    ax.axhline(chi2_lo, color='orange', ls='--', label=f"χ²(2) 95% lower = {chi2_lo}")
-    ax.fill_between(t, chi2_lo, chi2_hi, alpha=0.07, color='green')
-    ax.set_xlabel("Time [s]"); ax.set_ylabel("NIS")
-    ax.set_ylim(0, 10)
-    ax.legend(fontsize=8); ax.grid(True)
 
+    ax_nis.plot(nis_t, nis_vals, 'b.', ms=4,
+                label=f"NIS ({pct_nis:.1f}% in bounds)")
+
+    chi2_lo, chi2_hi = 0.103, 5.991
+
+    t = np.array(nis_t)
+    ax_nis.fill_between(t, chi2_lo, chi2_hi, alpha=0.08, color='green')
+
+    ax_nis.axhline(chi2_hi, color='r', ls='--', label="χ² upper")
+    ax_nis.axhline(chi2_lo, color='orange', ls='--', label="χ² lower")
+
+    ax_nis.set_xlabel("Time [s]")
+    ax_nis.set_ylabel("NIS")
+    ax_nis.set_ylim(0, 10)
+    ax_nis.grid(True)
+    ax_nis.legend(fontsize=8)
+
+    # =========================================================
     plt.tight_layout()
-    
+
     if save_path:
         save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)

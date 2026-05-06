@@ -96,23 +96,20 @@ ss_errors = [np.sqrt((e['N'] - gt[np.argmin(np.abs(gt_t - e['t'])), 0])**2 +
                      (e['E'] - gt[np.argmin(np.abs(gt_t - e['t'])), 1])**2)
              for e in est_history if e['t'] > 12.0] 
 
-rmse = float(np.sqrt(np.mean(np.square(ss_errors)))) if ss_errors else 0.0
+ss_rmse = float(np.sqrt(np.mean(np.square(ss_errors))))
 pct_nis = float((np.array([n['nis'] for n in nis_history]) < 5.99).mean() * 100) if nis_history else 0.0
 
 # Dashboard
 plot_tracking_results(
-    data, est_history, nis_history, pct_nis,
+    data, est_history, nis_history, pct_nis, 
     title="Scenario A — Single target, radar only",
     save_path= "figures/task3/scenario_A.png"
 )
-
-print("Last est time:", est_history[-1]['t'])
-print("Total duration:", est_history[-1]['t'] - est_history[0]['t'])
 
 # Report
 confirm_ok = (confirmation_time is not None and confirmation_time <= first_true.time + 5*(1/0.3))
 print(f"\n{'='*44}\nSCENARIO A  QUALIFICATION REPORT\n{'='*44}")
 print(f"  1. CONFIRMATION : {'PASSED' if confirm_ok else 'FAILED'} ({confirmation_time:.2f}s)")
-print(f"  2. ACCURACY     : {'PASSED' if rmse < 12 else 'FAILED'} (RMSE: {rmse:.2f}m)")
+print(f"  2. ACCURACY     : {'PASSED' if ss_rmse < 12 else 'FAILED'} (RMSE: {ss_rmse:.2f}m)")
 print(f"  3. CONSISTENCY  : {'PASSED' if pct_nis >= 90 else 'FAILED'} ({pct_nis:.1f}%)")
 print(f"{'='*44}")
