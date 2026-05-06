@@ -46,8 +46,8 @@ class SimulationOutput:
 def load_simulation_output(scenario_name: str, base_dir: str = None) -> SimulationOutput:
     """Loads a SimulationOutput object from a saved JSON file."""
     if base_dir is None:
-        # Default to the directory where this script is located
-        base_dir = Path(__file__).parent
+        # Default to the harbour_sim_output directory relative to this script
+        base_dir = Path(__file__).parent.parent / "harbour_sim_output"
     
     filepath = Path(base_dir) / f"scenario_{scenario_name}.json"
     with open(filepath, 'r') as f:

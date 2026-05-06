@@ -4,7 +4,7 @@ from pathlib import Path
 
 from coordinate_frame_manager import CoordinateFrameManager
 from ekf_tracker import EKFTracker
-from harbour_sim_output.load_simulation_data import load_simulation_output
+from load_simulation_data import load_simulation_output
 from plot_results import plot_tracking_results
 
 # 1. Initialisation
