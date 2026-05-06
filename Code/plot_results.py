@@ -91,5 +91,6 @@ def plot_tracking_results(simulation_output, est_history, nis_history, title="Tr
         save_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(save_path)
         plt.close(fig)
+        print(f"Saved plot to {save_path}")
     else:
         plt.show()

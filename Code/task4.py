@@ -128,7 +128,7 @@ seq_rmse,   seq_pct,   _  = compute_metrics(seq_state["est"],   seq_state["nis"]
 joint_rmse, joint_pct, _  = compute_metrics(joint_state["est"], joint_state["nis"])
 
 # ── Plots ─────────────────────────────────────────────────────────────────────
-out_dir = Path("../figures/task4")
+out_dir = Path("figures/task4")
 plot_tracking_results(data, seq_state["est"],   seq_state["nis"],
     title="Scenario B — Sequential fusion (radar + camera)",
     save_path=out_dir / "scenario_B_sequential.png")
@@ -164,14 +164,4 @@ winner_rmse = "Sequential" if seq_rmse  <= joint_rmse  else "Joint"
 winner_nis  = "Sequential" if seq_pct   >= joint_pct   else "Joint"
 print(f"  Lower RMSE        -> {winner_rmse}")
 print(f"  Better NIS        -> {winner_nis}")
-print()
-print("Explanation:")
-print("  Sequential fusion applies a radar update first, then a camera update on")
-print("  the resulting posterior. With independent noise, this is mathematically")
-print("  equivalent to the joint update at simultaneous scan times. Any difference")
-print("  arises from floating-point ordering and the number of coincident scans")
-print("  (11 of 90). The camera contributes only when the target is inside its")
-print("  500 m / 180 deg FOV, so the improvement over radar-only is modest but")
-print("  measurable: the camera's 0.15 deg bearing noise (half of radar's 0.3 deg)")
-print("  tightens the lateral position estimate when both sensors observe together.")
 print(f"{'='*w}")

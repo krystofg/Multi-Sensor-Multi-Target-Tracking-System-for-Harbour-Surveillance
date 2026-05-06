@@ -84,7 +84,7 @@ pct_nis = float((np.array([n['nis'] for n in nis_history]) < 5.99).mean() * 100)
 plot_tracking_results(
     data, est_history, nis_history,
     title="Scenario A — Single target, radar only",
-    save_path=Path("../figures/task3/scenario_A.png")
+    save_path= "figures/task3/scenario_A.png"
 )
 
 # Report
