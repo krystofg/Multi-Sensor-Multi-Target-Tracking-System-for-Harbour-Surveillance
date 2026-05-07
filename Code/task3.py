@@ -92,7 +92,7 @@ for t, group in groupby(radar_meas, key=lambda m: round(m.time, 1)):
 
 # 3. Metrics & Reporting
 gt, gt_t = data.ground_truth[0], data.ground_truth_times
-steady_start = confirmation_time # or +2 scans
+steady_start = confirmation_time       # RMSE and NIS evaluation begins after track confirmation (t = 13.30 s)
 ss_errors = [
     np.sqrt(
         (e['N'] - gt[np.argmin(np.abs(gt_t - e['t'])), 0])**2 +
