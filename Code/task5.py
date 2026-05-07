@@ -1,493 +1,414 @@
+"""Task 5: asynchronous AIS fusion for Scenario C.
+
+Runs three single-target EKF variants:
+  1. radar + camera,
+  2. radar + camera + AIS,
+  3. AIS only.
+
+Outputs CSV/JSON results and separate PNG plots by default.
+"""
+
+from __future__ import annotations
+
+import argparse
 import csv
-import contextlib
-import io
 import json
+import math
 from pathlib import Path
-import sys
-from types import SimpleNamespace
-import types
 
 import numpy as np
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
-# coordinate_frame_manager imports matplotlib for old plotting experiments, but
-# T5 does not need it. Keep the shared file untouched and provide a tiny import
-# stub when matplotlib is not installed in the current runtime.
-try:
-    import matplotlib.pyplot  # noqa: F401
-except ModuleNotFoundError:
-    sys.modules.setdefault("matplotlib", types.ModuleType("matplotlib"))
-    sys.modules.setdefault("matplotlib.pyplot", types.ModuleType("matplotlib.pyplot"))
-
-with contextlib.redirect_stdout(io.StringIO()):
-    from coordinate_frame_manager import CoordinateFrameManager
-from ekf_tracker import EKFTracker
-from harbour_sim_output.load_simulation_data import Measurement, load_simulation_output
+from coordinate_frame_manager import CoordinateFrameManager
+from ekf_tracker import EKFTracker, build_motion_model, build_R_radar
+from load_simulation_data import load_simulation_output
 
 
-# =============================================================================
-# T5 PROTOTYPE: FUSION STEP 2 - ADD AIS
-# =============================================================================
-#
-# This file is intentionally a prototype that mixes the previous task pieces.
-# Radar/camera EKF logic is reused from EKFTracker and CoordinateFrameManager.
-# The new T5-specific logic is:
-#   1. time-ordered asynchronous update loop,
-#   2. AIS NED position -> implied range/bearing relative to nearest GNSS,
-#   3. AIS-only initialisation,
-#   4. dropout/reacquisition reporting for Scenario C.
-#
-# Later, once T4 is stable, the bootstrap and radar/camera parts can be replaced
-# by the real T4 output while keeping the AIS helper functions below.
+ROOT = Path(__file__).resolve().parents[1]
+OUT_DIR = ROOT / "outputs" / "task5"
+PLOT_DIR = OUT_DIR / "plots"
+
+DROP_START = 60.0
+DROP_END = 90.0
+SENSOR_ORDER = {"radar": 0, "camera": 1, "ais": 2}
+CHI2_95 = {1: 3.8415, 2: 5.9915}
+CHI2_99 = {1: 6.6349, 2: 9.2103}
 
 
-CHI2_GATE_99 = 9.2103
-WIDE_BOOTSTRAP_GATE = 50.0
-AIS_DROPOUT_START = 60.0
-AIS_DROPOUT_END = 90.0
+def wrap(angle):
+    return (angle + math.pi) % (2.0 * math.pi) - math.pi
 
 
-def wrap_angle(angle):
-    return (angle + np.pi) % (2.0 * np.pi) - np.pi
+def sensor_pos(cfm, sensor_id):
+    return cfm.vessel_pos if sensor_id == "ais" else cfm.offsets.get(sensor_id, np.zeros(2))
 
 
-def range_bearing_to_ned(range_m, bearing_rad, sensor_pos):
-    delta = np.array(
-        [
-            range_m * np.cos(bearing_rad),
-            range_m * np.sin(bearing_rad),
-        ]
-    )
-    return sensor_pos + delta
+def rb_to_ned(range_m, bearing_rad, origin):
+    return origin + np.array([range_m * math.cos(bearing_rad), range_m * math.sin(bearing_rad)])
 
 
-def measurement_to_ned_position(measurement, cfm):
-    """Convert one radar/camera/AIS measurement into a rough NED position."""
-    if measurement.sensor_id in ("radar", "camera"):
-        sensor_pos = cfm.offsets[measurement.sensor_id]
-        return range_bearing_to_ned(
-            measurement.range_m,
-            measurement.bearing_rad,
-            sensor_pos,
-        )
-
-    if measurement.sensor_id == "ais":
-        return np.array([measurement.north_m, measurement.east_m], dtype=float)
-
-    raise ValueError(f"Cannot initialise from sensor {measurement.sensor_id}")
-
-
-def make_tracker_from_measurement(measurement, cfm):
-    """Prototype track initialisation from a single measurement."""
-    pos = measurement_to_ned_position(measurement, cfm)
+def initial_state(meas, cfm):
+    if meas.sensor_id == "ais":
+        pos = np.array([meas.north_m, meas.east_m], dtype=float)
+    else:
+        pos = rb_to_ned(meas.range_m, meas.bearing_rad, sensor_pos(cfm, meas.sensor_id))
     x0 = np.array([[pos[0]], [pos[1]], [0.0], [0.0]], dtype=float)
-    P0 = np.diag([225.0, 225.0, 225.0, 225.0])
-    return EKFTracker(x0=x0, P0=P0, cfm=cfm)
+    P0 = np.diag([15.0**2, 15.0**2, 50.0**2, 50.0**2])
+    return x0, P0
 
 
-def build_gnss_timeline(measurements):
-    gnss = sorted(
-        [m for m in measurements if m.sensor_id == "gnss"],
-        key=lambda m: m.time,
-    )
-    times = np.array([m.time for m in gnss], dtype=float)
-    return gnss, times
+def first_true(data, sensor_id, target_id=0):
+    for meas in data.measurements:
+        if meas.sensor_id == sensor_id and not meas.is_false_alarm and meas.target_id in (target_id, -1):
+            return meas
+    raise RuntimeError(f"No usable {sensor_id} bootstrap measurement found")
 
 
-def nearest_gnss(gnss_measurements, gnss_times, time_s):
-    """Nearest GNSS lookup for AIS reference position."""
-    if len(gnss_measurements) == 0:
-        raise ValueError("AIS update requires GNSS measurements")
+def gnss_timeline(data):
+    fixes = sorted([m for m in data.measurements if m.sensor_id == "gnss"], key=lambda m: m.time)
+    return fixes, np.array([m.time for m in fixes], dtype=float)
 
-    idx = int(np.searchsorted(gnss_times, time_s))
+
+def nearest_gnss(fixes, times, time_s):
+    if not fixes:
+        raise ValueError("AIS fusion needs GNSS fixes")
+    idx = int(np.searchsorted(times, time_s))
     if idx <= 0:
-        return gnss_measurements[0]
-    if idx >= len(gnss_measurements):
-        return gnss_measurements[-1]
-
-    before = gnss_measurements[idx - 1]
-    after = gnss_measurements[idx]
-    if abs(after.time - time_s) < abs(time_s - before.time):
-        return after
-    return before
+        return fixes[0]
+    if idx >= len(fixes):
+        return fixes[-1]
+    before, after = fixes[idx - 1], fixes[idx]
+    return after if abs(after.time - time_s) < abs(time_s - before.time) else before
 
 
-def ais_cartesian_to_polar_covariance(ais_measurement, gnss_measurement):
-    """Convert AIS/GNSS Cartesian position noise into range/bearing noise."""
-    dN = ais_measurement.north_m - gnss_measurement.north_m
-    dE = ais_measurement.east_m - gnss_measurement.east_m
-    r_sq = max(dN**2 + dE**2, 1e-9)
-    r = np.sqrt(r_sq)
-
-    J = np.array(
-        [
-            [dN / r, dE / r],
-            [-dE / r_sq, dN / r_sq],
-        ]
-    )
-
-    # Project spec: AIS sigma = 4 m, GNSS sigma = 2 m.
-    R_ne = (4.0**2 + 2.0**2) * np.eye(2)
-    return J @ R_ne @ J.T
+def radar_R(data):
+    cfg = data.sensor_configs["radar"]
+    return build_R_radar(cfg["sigma_r_m"], math.radians(cfg["sigma_phi_deg"]))
 
 
-def ais_to_range_bearing_measurement(ais_measurement, gnss_measurement):
-    """Create a synthetic range/bearing measurement for EKFTracker.update()."""
-    dN = ais_measurement.north_m - gnss_measurement.north_m
-    dE = ais_measurement.east_m - gnss_measurement.east_m
-    range_m = float(np.sqrt(dN**2 + dE**2))
-    bearing_rad = float(np.arctan2(dE, dN))
-
-    return Measurement(
-        sensor_id="ais",
-        time=ais_measurement.time,
-        is_false_alarm=ais_measurement.is_false_alarm,
-        target_id=ais_measurement.target_id,
-        range_m=range_m,
-        bearing_rad=bearing_rad,
-        north_m=ais_measurement.north_m,
-        east_m=ais_measurement.east_m,
-    )
+def camera_R(data):
+    return np.array([[math.radians(data.sensor_configs["camera"]["sigma_phi_deg"]) ** 2]])
 
 
-def nis_for_measurement(tracker, measurement, R_override=None):
-    """Compute NIS without changing the tracker."""
-    hx, H = tracker.cfm.get_h_and_H(tracker.x, measurement.sensor_id)
-    R = R_override
-    if R is None:
-        R = tracker.cfm.R_specs.get(measurement.sensor_id, tracker.cfm.R_specs["radar"])
-
-    z = np.array([[measurement.range_m], [measurement.bearing_rad]])
-    y = z - hx
-    y[1, 0] = wrap_angle(y[1, 0])
-
-    S = H @ tracker.P @ H.T + R
-    return float((y.T @ np.linalg.solve(S, y))[0, 0])
+def ais_z_R(ais, gnss, data):
+    dN, dE = ais.north_m - gnss.north_m, ais.east_m - gnss.east_m
+    r2 = max(dN * dN + dE * dE, 1e-9)
+    r = math.sqrt(r2)
+    z = np.array([[r], [math.atan2(dE, dN)]], dtype=float)
+    J = np.array([[dN / r, dE / r], [-dE / r2, dN / r2]], dtype=float)
+    sigma2 = data.sensor_configs["ais"]["sigma_pos_m"] ** 2 + data.sensor_configs["gnss"]["sigma_pos_m"] ** 2
+    return z, J @ (sigma2 * np.eye(2)) @ J.T
 
 
-def update_with_optional_R(tracker, measurement, gate_limit, R_override=None):
-    """Use EKFTracker.update(), optionally with a temporary sensor covariance."""
-    if R_override is None:
-        return tracker.update(measurement, gate_limit=gate_limit)
-
-    old_R = tracker.cfm.R_specs.get(measurement.sensor_id)
-    tracker.cfm.R_specs[measurement.sensor_id] = R_override
+def prepare_update(tracker, meas, cfm, data, gnss, gnss_times):
     try:
-        return tracker.update(measurement, gate_limit=gate_limit)
-    finally:
-        if old_R is None:
-            tracker.cfm.R_specs.pop(measurement.sensor_id, None)
+        if meas.sensor_id == "radar":
+            z = np.array([[meas.range_m], [meas.bearing_rad]], dtype=float)
+            h, H, R, dof, angle_i = *cfm.get_h_and_H(tracker.x, "radar"), radar_R(data), 2, 1
+        elif meas.sensor_id == "camera":
+            h_full, H_full = cfm.get_h_and_H(tracker.x, "camera")
+            z = np.array([[meas.bearing_rad]], dtype=float)
+            h, H, R, dof, angle_i = h_full[1:2], H_full[1:2], camera_R(data), 1, 0
+        elif meas.sensor_id == "ais":
+            fix = nearest_gnss(gnss, gnss_times, meas.time)
+            cfm.update_vessel_pos(fix)
+            z, R = ais_z_R(meas, fix, data)
+            h, H, dof, angle_i = *cfm.get_h_and_H(tracker.x, "ais"), 2, 1
         else:
-            tracker.cfm.R_specs[measurement.sensor_id] = old_R
+            return None
 
-
-def prepare_measurement_for_update(measurement, tracker, gnss_measurements, gnss_times):
-    """Return EKF-ready measurement plus covariance override and helper metadata."""
-    if measurement.sensor_id != "ais":
-        return measurement, None, None
-
-    gnss = nearest_gnss(gnss_measurements, gnss_times, measurement.time)
-    tracker.cfm.update_vessel_pos(gnss)
-
-    ais_rb = ais_to_range_bearing_measurement(measurement, gnss)
-    R_ais_rb = ais_cartesian_to_polar_covariance(measurement, gnss)
-    return ais_rb, R_ais_rb, gnss
-
-
-def grouped_measurements_by_time(data, allowed_sensors):
-    """Create one asynchronous update queue from selected sensor streams."""
-    allowed = set(allowed_sensors)
-    buckets = {}
-    for measurement in data.measurements:
-        if measurement.sensor_id not in allowed:
-            continue
-        key = round(measurement.time, 6)
-        buckets.setdefault(key, []).append(measurement)
-
-    for time_s in sorted(buckets):
-        order = {"radar": 0, "camera": 1, "ais": 2}
-        yield time_s, sorted(buckets[time_s], key=lambda m: order.get(m.sensor_id, 99))
-
-
-def choose_bootstrap_measurement(data, cfm, bootstrap_sensor):
-    """Prototype bootstrap: use first non-false-alarm measurement from a sensor."""
-    for measurement in data.measurements:
-        if measurement.sensor_id != bootstrap_sensor:
-            continue
-        if measurement.is_false_alarm:
-            continue
-        return measurement
-    raise RuntimeError(f"No bootstrap measurement found for {bootstrap_sensor}")
-
-
-def select_best_measurement(tracker, measurements, gnss_measurements, gnss_times, gate):
-    """Nearest-neighbour selection for this single-target T5 prototype."""
-    best = None
-
-    for raw_m in measurements:
-        try:
-            m, R_override, gnss = prepare_measurement_for_update(
-                raw_m,
-                tracker,
-                gnss_measurements,
-                gnss_times,
-            )
-            nis = nis_for_measurement(tracker, m, R_override)
-        except (ValueError, np.linalg.LinAlgError):
-            continue
-
-        if best is None or nis < best.nis:
-            best = SimpleNamespace(
-                raw=raw_m,
-                measurement=m,
-                R_override=R_override,
-                gnss=gnss,
-                nis=nis,
-            )
-
-    if best is None or best.nis > gate:
+        innov = z - h
+        innov[angle_i, 0] = wrap(float(innov[angle_i, 0]))
+        S = H @ tracker.P @ H.T + R
+        nis = float((innov.T @ np.linalg.solve(S, innov))[0, 0])
+        return {"meas": meas, "innov": innov, "H": H, "R": R, "S": S, "nis": nis, "dof": dof}
+    except (TypeError, ValueError, np.linalg.LinAlgError, FloatingPointError):
         return None
-    return best
 
 
-def run_t5_prototype(data, allowed_sensors, bootstrap_sensor, run_name):
-    """Run the single-target asynchronous T5 prototype."""
+def apply_update(tracker, update):
+    K = tracker.P @ update["H"].T @ np.linalg.inv(update["S"])
+    tracker.x = tracker.x + K @ update["innov"]
+    I = np.eye(4)
+    IKH = I - K @ update["H"]
+    tracker.P = IKH @ tracker.P @ IKH.T + K @ update["R"] @ K.T
+
+
+def grouped_measurements(data, allowed_sensors):
+    groups = {}
+    for meas in data.measurements:
+        if meas.sensor_id in allowed_sensors:
+            groups.setdefault(round(float(meas.time), 6), []).append(meas)
+    for time_s in sorted(groups):
+        yield time_s, sorted(groups[time_s], key=lambda m: (SENSOR_ORDER.get(m.sensor_id, 99), m.is_false_alarm))
+
+
+def best_update(tracker, measurements, cfm, data, gnss, gnss_times):
+    updates = [u for m in measurements if (u := prepare_update(tracker, m, cfm, data, gnss, gnss_times))]
+    return min(updates, key=lambda u: u["nis"], default=None)
+
+
+def run_tracker(data, sensors, bootstrap_sensor, name, sigma_a=0.1):
     cfm = CoordinateFrameManager()
-    gnss_measurements, gnss_times = build_gnss_timeline(data.measurements)
+    gnss, gnss_times = gnss_timeline(data)
+    bootstrap = first_true(data, bootstrap_sensor)
+    tracker = EKFTracker(*initial_state(bootstrap, cfm), cfm=cfm, sigma_a=sigma_a)
+    last_t = float(bootstrap.time)
+    result = {
+        "name": name,
+        "history": [],
+        "nis": [],
+        "accepted_by_sensor": {sensor: 0 for sensor in sensors},
+        "bootstrap_sensor": bootstrap.sensor_id,
+        "bootstrap_time": float(bootstrap.time),
+    }
 
-    bootstrap = choose_bootstrap_measurement(data, cfm, bootstrap_sensor)
-    if bootstrap.sensor_id == "ais":
-        gnss = nearest_gnss(gnss_measurements, gnss_times, bootstrap.time)
-        cfm.update_vessel_pos(gnss)
-
-    tracker = make_tracker_from_measurement(bootstrap, cfm)
-    last_t = bootstrap.time
-    history = []
-    nis_history = []
-    accepted_by_sensor = {"radar": 0, "camera": 0, "ais": 0}
-
-    for time_s, scan_measurements in grouped_measurements_by_time(data, allowed_sensors):
+    for time_s, scan in grouped_measurements(data, sensors):
         if time_s < bootstrap.time:
             continue
+        dt = time_s - last_t
+        if dt > 0.0:
+            F, Q = build_motion_model(dt, sigma_a)
+            tracker.x, tracker.P = tracker.predict(tracker.x, tracker.P, F, Q)
+            last_t = time_s
 
-        tracker.predict(time_s - last_t)
-        last_t = time_s
-
-        accepted_sensors = []
-        for sensor_id in ("radar", "camera", "ais"):
-            sensor_measurements = [
-                m for m in scan_measurements if m.sensor_id == sensor_id
-            ]
-            if not sensor_measurements:
+        accepted = []
+        for sensor in ("radar", "camera", "ais"):
+            candidates = [m for m in scan if m.sensor_id == sensor and not (time_s == bootstrap.time and m is bootstrap)]
+            if not candidates:
                 continue
-
-            gate = WIDE_BOOTSTRAP_GATE if time_s <= bootstrap.time + 10.0 else CHI2_GATE_99
-            selected = select_best_measurement(
-                tracker,
-                sensor_measurements,
-                gnss_measurements,
-                gnss_times,
-                gate,
-            )
-            if selected is None:
+            update = best_update(tracker, candidates, cfm, data, gnss, gnss_times)
+            if update is None:
                 continue
+            ok = update["nis"] <= CHI2_99[update["dof"]]
+            result["nis"].append({"t": time_s, "sensor": sensor, "nis": update["nis"], "dof": update["dof"], "accepted": ok})
+            if ok:
+                apply_update(tracker, update)
+                accepted.append(sensor)
+                result["accepted_by_sensor"][sensor] += 1
 
-            accepted, nis = update_with_optional_R(
-                tracker,
-                selected.measurement,
-                gate,
-                selected.R_override,
-            )
-            nis_history.append(
-                {
-                    "t": time_s,
-                    "sensor": sensor_id,
-                    "nis": nis,
-                    "accepted": accepted,
-                }
-            )
-
-            if accepted:
-                accepted_sensors.append(sensor_id)
-                accepted_by_sensor[sensor_id] += 1
-
-        history.append(
+        result["history"].append(
             {
                 "t": time_s,
                 "N": float(tracker.x[0, 0]),
                 "E": float(tracker.x[1, 0]),
                 "vN": float(tracker.x[2, 0]),
                 "vE": float(tracker.x[3, 0]),
-                "accepted": bool(accepted_sensors),
-                "sensors": "+".join(accepted_sensors),
-                "run": run_name,
+                "accepted": bool(accepted),
+                "sensors": "+".join(accepted),
+                "run": name,
             }
         )
+    return result
 
+
+def run_all(data):
     return {
-        "name": run_name,
-        "allowed_sensors": list(allowed_sensors),
-        "bootstrap_sensor": bootstrap.sensor_id,
-        "bootstrap_time": bootstrap.time,
-        "history": history,
-        "nis": nis_history,
-        "accepted_by_sensor": accepted_by_sensor,
+        "without_ais": run_tracker(data, ("radar", "camera"), "radar", "radar_camera_without_ais"),
+        "with_ais": run_tracker(data, ("radar", "camera", "ais"), "radar", "radar_camera_with_ais"),
+        "ais_only": run_tracker(data, ("ais",), "ais", "ais_only_initialisation"),
     }
 
 
-def rmse_after(data, result, start_time=20.0, end_time=None, target_id=0):
-    gt = data.ground_truth[target_id]
-    gt_t = data.ground_truth_times
-
-    errors = []
+def errors(data, result, start=0.0, end=None):
+    gt, gt_t = data.ground_truth[0], data.ground_truth_times
+    out = []
     for row in result["history"]:
-        if row["t"] < start_time:
+        if row["t"] < start or (end is not None and row["t"] > end):
             continue
-        if end_time is not None and row["t"] > end_time:
-            continue
-
-        idx = int(np.argmin(np.abs(gt_t - row["t"])))
-        errors.append((row["N"] - gt[idx, 0])**2 + (row["E"] - gt[idx, 1])**2)
-
-    return float(np.sqrt(np.mean(errors))) if errors else float("nan")
+        truth = gt[int(np.argmin(np.abs(gt_t - row["t"])))]
+        out.append((row["t"], math.hypot(row["N"] - truth[0], row["E"] - truth[1])))
+    return out
 
 
-def first_accepted_ais_after(result, time_s):
+def rmse(data, result, start=20.0, end=None):
+    vals = [err for _, err in errors(data, result, start, end)]
+    return float(np.sqrt(np.mean(np.square(vals)))) if vals else float("nan")
+
+
+def rmse_windows(data, result, windows):
+    vals = []
+    for start, end in windows:
+        vals.extend(err for _, err in errors(data, result, start, end))
+    return float(np.sqrt(np.mean(np.square(vals)))) if vals else float("nan")
+
+
+def nis_pct(result):
+    accepted = [row for row in result["nis"] if row["accepted"]]
+    if not accepted:
+        return 0.0
+    return 100.0 * sum(row["nis"] <= CHI2_95[row["dof"]] for row in accepted) / len(accepted)
+
+
+def count_updates(result, sensor, start, end):
+    return sum(1 for row in result["history"] if start <= row["t"] <= end and sensor in row["sensors"].split("+"))
+
+
+def first_after(result, sensor, time_s):
     for row in result["history"]:
-        if row["t"] > time_s and "ais" in row["sensors"].split("+"):
+        if row["t"] > time_s and sensor in row["sensors"].split("+"):
             return row["t"]
     return None
 
 
-def count_updates_in_window(result, sensor_id, start_s, end_s):
-    count = 0
-    for row in result["history"]:
-        if start_s <= row["t"] <= end_s and sensor_id in row["sensors"].split("+"):
-            count += 1
-    return count
-
-
-def write_history_csv(result, path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=[
-                "t",
-                "N",
-                "E",
-                "vN",
-                "vE",
-                "accepted",
-                "sensors",
-                "run",
-            ],
-        )
-        writer.writeheader()
-        writer.writerows(result["history"])
-
-
-def main():
-    data = load_simulation_output("C")
-
-    without_ais = run_t5_prototype(
-        data,
-        allowed_sensors=("radar", "camera"),
-        bootstrap_sensor="radar",
-        run_name="radar_camera_without_ais",
-    )
-
-    with_ais = run_t5_prototype(
-        data,
-        allowed_sensors=("radar", "camera", "ais"),
-        bootstrap_sensor="radar",
-        run_name="radar_camera_with_ais",
-    )
-
-    ais_only = run_t5_prototype(
-        data,
-        allowed_sensors=("ais",),
-        bootstrap_sensor="ais",
-        run_name="ais_only_initialisation",
-    )
-
-    out_dir = REPO_ROOT / "outputs" / "task5"
-    write_history_csv(without_ais, out_dir / "scenario_C_without_ais.csv")
-    write_history_csv(with_ais, out_dir / "scenario_C_with_ais.csv")
-    write_history_csv(ais_only, out_dir / "scenario_C_ais_only.csv")
-
-    report = {
-        "scenario": "C",
-        "status": "prototype",
+def build_report(data, results):
+    no_ais, with_ais, ais_only = results["without_ais"], results["with_ais"], results["ais_only"]
+    ais_windows = [(20.0, DROP_START), (DROP_END, data.t_end)]
+    no_ais_available = rmse_windows(data, no_ais, ais_windows)
+    with_ais_available = rmse_windows(data, with_ais, ais_windows)
+    reacq_time = first_after(with_ais, "ais", DROP_END)
+    radar_camera_dropout = count_updates(with_ais, "radar", DROP_START, DROP_END) + count_updates(with_ais, "camera", DROP_START, DROP_END)
+    ais_interval = data.sensor_configs["ais"]["interval_s"]
+    survives_dropout = radar_camera_dropout > 0 and not math.isnan(rmse(data, with_ais, DROP_START, DROP_END))
+    improves_with_ais = with_ais_available < no_ais_available
+    smooth_reacq = reacq_time is not None and reacq_time <= DROP_END + ais_interval + 1e-6
+    return {
+        "scenario": data.scenario_name,
+        "task": "T5 - asynchronous AIS fusion",
+        "dropout_window_s": [DROP_START, DROP_END],
+        "ais_available_windows_s": ais_windows,
+        "scenario_C_validation": {
+            "track_survives_dropout": survives_dropout,
+            "ais_improves_rmse_when_available": improves_with_ais,
+            "smooth_reacquisition": smooth_reacq,
+            "overall_pass": survives_dropout and improves_with_ais and smooth_reacq,
+        },
         "without_ais": {
-            "rmse_after_20_m": rmse_after(data, without_ais, start_time=20.0),
-            "accepted_by_sensor": without_ais["accepted_by_sensor"],
+            "rmse_after_20_m": rmse(data, no_ais),
+            "rmse_ais_available_windows_m": no_ais_available,
+            "nis_inside_95_pct": nis_pct(no_ais),
+            "accepted_by_sensor": no_ais["accepted_by_sensor"],
+            "bootstrap_sensor": no_ais["bootstrap_sensor"],
+            "bootstrap_time_s": no_ais["bootstrap_time"],
         },
         "with_ais": {
-            "rmse_after_20_m": rmse_after(data, with_ais, start_time=20.0),
-            "rmse_dropout_60_90_m": rmse_after(
-                data,
-                with_ais,
-                start_time=AIS_DROPOUT_START,
-                end_time=AIS_DROPOUT_END,
-            ),
+            "rmse_after_20_m": rmse(data, with_ais),
+            "rmse_ais_available_windows_m": with_ais_available,
+            "rmse_dropout_60_90_m": rmse(data, with_ais, DROP_START, DROP_END),
+            "nis_inside_95_pct": nis_pct(with_ais),
             "accepted_by_sensor": with_ais["accepted_by_sensor"],
-            "ais_updates_during_dropout": count_updates_in_window(
-                with_ais,
-                "ais",
-                AIS_DROPOUT_START,
-                AIS_DROPOUT_END,
-            ),
-            "radar_camera_updates_during_dropout": count_updates_in_window(
-                with_ais,
-                "radar",
-                AIS_DROPOUT_START,
-                AIS_DROPOUT_END,
-            )
-            + count_updates_in_window(
-                with_ais,
-                "camera",
-                AIS_DROPOUT_START,
-                AIS_DROPOUT_END,
-            ),
-            "first_ais_reacquisition_after_90_s": first_accepted_ais_after(
-                with_ais,
-                AIS_DROPOUT_END,
-            ),
+            "ais_updates_during_dropout": count_updates(with_ais, "ais", DROP_START, DROP_END),
+            "radar_camera_updates_during_dropout": radar_camera_dropout,
+            "first_ais_reacquisition_after_90_s": reacq_time,
+            "bootstrap_sensor": with_ais["bootstrap_sensor"],
+            "bootstrap_time_s": with_ais["bootstrap_time"],
         },
         "ais_only": {
-            "bootstrap_sensor": ais_only["bootstrap_sensor"],
-            "rmse_after_20_m": rmse_after(data, ais_only, start_time=20.0),
+            "rmse_after_20_m": rmse(data, ais_only),
+            "nis_inside_95_pct": nis_pct(ais_only),
             "accepted_by_sensor": ais_only["accepted_by_sensor"],
+            "bootstrap_sensor": ais_only["bootstrap_sensor"],
+            "bootstrap_time_s": ais_only["bootstrap_time"],
         },
     }
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "scenario_C_task5_report.json").write_text(
-        json.dumps(report, indent=2),
-        encoding="utf-8",
-    )
 
-    print("\n" + "=" * 48)
-    print("SCENARIO C - TASK 5 AIS FUSION PROTOTYPE")
-    print("=" * 48)
-    print(f"RMSE without AIS  : {report['without_ais']['rmse_after_20_m']:.2f} m")
-    print(f"RMSE with AIS     : {report['with_ais']['rmse_after_20_m']:.2f} m")
-    print(
-        "AIS dropout 60-90 : "
-        f"{report['with_ais']['ais_updates_during_dropout']} AIS updates, "
-        f"{report['with_ais']['radar_camera_updates_during_dropout']} radar/camera updates"
-    )
-    print(
-        "AIS reacquisition : "
-        f"{report['with_ais']['first_ais_reacquisition_after_90_s']} s"
-    )
-    print(f"Outputs written to {out_dir}")
-    print("=" * 48)
+def write_csv(result, path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fields = ["t", "N", "E", "vN", "vE", "accepted", "sensors", "run"]
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for row in result["history"]:
+            writer.writerow({key: row[key] if key in ("accepted", "sensors", "run") else f"{row[key]:.6f}" for key in fields})
+
+
+def write_outputs(results, report, out_dir):
+    out_dir.mkdir(parents=True, exist_ok=True)
+    write_csv(results["without_ais"], out_dir / "scenario_C_without_ais.csv")
+    write_csv(results["with_ais"], out_dir / "scenario_C_with_ais.csv")
+    write_csv(results["ais_only"], out_dir / "scenario_C_ais_only.csv")
+    (out_dir / "scenario_C_task5_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+
+
+def plot_results(data, results, plot_dir):
+    import matplotlib.pyplot as plt
+
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    colors = {"without_ais": "#d62728", "with_ais": "#1f77b4", "ais_only": "#2ca02c"}
+    labels = {"without_ais": "Radar + camera", "with_ais": "Radar + camera + AIS", "ais_only": "AIS only"}
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    for key, result in results.items():
+        err = errors(data, result)
+        ax.plot([t for t, _ in err], [e for _, e in err], lw=2, color=colors[key], label=labels[key])
+    ax.axvspan(DROP_START, DROP_END, color="0.85", alpha=0.35, label="AIS dropout")
+    ax.set(title="Scenario C position error", xlabel="Time [s]", ylabel="Position error [m]")
+    ax.grid(True, alpha=0.2)
+    ax.legend(frameon=True, framealpha=0.9)
+    fig.tight_layout()
+    fig.savefig(plot_dir / "position_error.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(7, 7))
+    gt = data.ground_truth[0]
+    ax.plot(gt[:, 1], gt[:, 0], color="black", lw=2.2, label="Ground truth")
+    for key, result in results.items():
+        ax.plot([r["E"] for r in result["history"]], [r["N"] for r in result["history"]], lw=1.8, color=colors[key], label=labels[key])
+    ax.set(title="Scenario C trajectory", xlabel="East [m]", ylabel="North [m]", aspect="equal")
+    ax.grid(True, alpha=0.2)
+    ax.legend(frameon=True, framealpha=0.9)
+    fig.tight_layout()
+    fig.savefig(plot_dir / "trajectory.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    sensor_colors = {"radar": "#d62728", "camera": "#9467bd", "ais": "#1f77b4"}
+    for key, result in results.items():
+        for sensor, color in sensor_colors.items():
+            rows = [r for r in result["nis"] if r["sensor"] == sensor and r["accepted"]]
+            if rows:
+                ax.scatter([r["t"] for r in rows], [r["nis"] for r in rows], s=18, alpha=0.75, color=color, label=f"{labels[key]} {sensor}")
+    ax.axhline(CHI2_95[2], color="0.25", ls="--", lw=1.2, label="2D 95% upper")
+    ax.axhline(CHI2_95[1], color="0.55", ls=":", lw=1.2, label="1D 95% upper")
+    ax.set(title="Accepted update NIS", xlabel="Time [s]", ylabel="NIS")
+    ax.grid(True, alpha=0.2)
+    ax.legend(frameon=True, framealpha=0.9, fontsize=8)
+    fig.tight_layout()
+    fig.savefig(plot_dir / "nis.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def print_report(report):
+    a, b, c = report["without_ais"], report["with_ais"], report["ais_only"]
+    v = report["scenario_C_validation"]
+    print("\n" + "=" * 56)
+    print("SCENARIO C - TASK 5 AIS FUSION")
+    print("=" * 56)
+    print(f"RMSE radar/camera      : {a['rmse_after_20_m']:.2f} m")
+    print(f"RMSE radar/camera+AIS  : {b['rmse_after_20_m']:.2f} m")
+    print(f"RMSE AIS-only          : {c['rmse_after_20_m']:.2f} m\n")
+    print(f"AIS available RMSE     : without AIS {a['rmse_ais_available_windows_m']:.2f} m, with AIS {b['rmse_ais_available_windows_m']:.2f} m")
+    print(f"AIS dropout 60-90 s    : {b['ais_updates_during_dropout']} AIS updates, {b['radar_camera_updates_during_dropout']} radar/camera updates")
+    print(f"AIS reacquisition      : {b['first_ais_reacquisition_after_90_s']} s\n")
+    print(f"NIS inside 95%         : without AIS {a['nis_inside_95_pct']:.1f}%, with AIS {b['nis_inside_95_pct']:.1f}%, AIS-only {c['nis_inside_95_pct']:.1f}%")
+    print(f"Scenario C validation  : {'PASSED' if v['overall_pass'] else 'FAILED'}")
+    print("=" * 56)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run Task 5 AIS fusion.")
+    parser.add_argument("--scenario", default="C")
+    parser.add_argument("--output-dir", type=Path, default=OUT_DIR)
+    parser.add_argument("--figure-dir", type=Path, default=PLOT_DIR)
+    parser.add_argument("--no-files", action="store_true")
+    parser.add_argument("--no-plots", action="store_true")
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    data = load_simulation_output(args.scenario)
+    results = run_all(data)
+    report = build_report(data, results)
+    print_report(report)
+    if not args.no_files:
+        write_outputs(results, report, args.output_dir)
+        print(f"Outputs written to {args.output_dir}")
+    if not args.no_plots:
+        plot_results(data, results, args.figure_dir)
+        print(f"Figures written to {args.figure_dir}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
