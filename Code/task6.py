@@ -31,16 +31,12 @@ from coordinate_frame_manager import CoordinateFrameManager
 from ekf_tracker import EKFTracker, build_motion_model, build_R_radar, build_R_camera
 from load_simulation_data import load_simulation_output, SimulationOutput
 
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
-ROOT = Path(__file__).resolve().parent
+
+ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "outputs" / "task6"
 PLOT_DIR = OUT_DIR / "plots"
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
+
 # Chi-squared gate thresholds  (degrees of freedom = measurement dimension)
 # P_G = 0.99  =>  chi2.ppf(0.99, df)
 GATE_RADAR = float(chi2.ppf(0.95, df=2))   
@@ -106,16 +102,16 @@ class Track:
         self.sigma_a = sigma_a
         self.born_at = born_at
 
-        self.x = x0.copy()       # (4,1) NED state
-        self.P = P0.copy()       # (4,4) covariance
+        self.x = x0.copy()      
+        self.P = P0.copy()     
 
         # Lifecycle counters
-        self.hit_window: List[bool] = []   # last N bools (for M-of-N)
-        self.miss_streak = 0               # consecutive missed detections
+        self.hit_window: List[bool] = []  
+        self.miss_streak = 0              
         self.total_hits = 0
 
         # History for output / metrics
-        self.history: List[Dict] = []      # [{t, N, E, vN, vE, state}, ...]
+        self.history: List[Dict] = []      
 
     # ── EKF wrappers ────────────────────────────────────────────────────────
 
@@ -284,12 +280,10 @@ def init_track_from_meas(meas, cfm: CoordinateFrameManager,
     """Initialise a tentative track from a single radar or camera detection."""
     sid = meas.sensor_id
     if sid == "radar":
-        # Convert polar → Cartesian (from radar at NED origin)
         pN = meas.range_m * math.cos(meas.bearing_rad)
         pE = meas.range_m * math.sin(meas.bearing_rad)
-        sigma_pos = 15.0   # m (generous for initialisation)
+        sigma_pos = 15.0   
     elif sid == "camera":
-        # Camera gives bearing only — can't range-initialise well; use 200 m range
         offset = cfm.offsets.get("camera", np.zeros(2))
         r_init = 200.0
         pN = offset[0] + r_init * math.cos(meas.bearing_rad)
@@ -327,12 +321,10 @@ def run_tracker(data: SimulationOutput,
     last_t: float = 0.0
     nis_log: List[Dict] = []
 
-    # Group measurements by scan time
     allowed = set(active_sensors)
     scan_groups: Dict[float, List] = {}
     for m in data.measurements:
         if m.sensor_id in allowed and not m.is_false_alarm or m.sensor_id in allowed:
-            # Include ALL detections (true + false alarms) — tracker must handle them
             key = round(float(m.time), 6)
             scan_groups.setdefault(key, []).append(m)
 
@@ -399,8 +391,8 @@ def run_tracker(data: SimulationOutput,
             # Unmatched detections go to track initiation
             for mi in unmatched:
                 meas = sensor_meas[mi]
-                if not meas.is_false_alarm:  # in real system we don't know this
-                    pass                     # initiate from any unmatched detection
+                if not meas.is_false_alarm:  
+                    pass                     
                 new_track = init_track_from_meas(meas, cfm, sigma_a, t)
                 if new_track is not None:
                     tracks.append(new_track)
@@ -437,14 +429,13 @@ def compute_metrics(data: SimulationOutput, result: Dict
     motp_series : MOTP at each scan (mean localisation error of matched pairs)
     ce_series   : |#confirmed_tracks - #active_true_targets| at each scan
     """
-    gt = data.ground_truth          # {target_id: (T,4) array}
+    gt = data.ground_truth         
     gt_times = data.ground_truth_times
 
     # Confirmed tracks only
     confirmed_tracks = [tr for tr in result["tracks"]
                         if tr.id in result["confirmed_ids"]]
 
-    # Build a time → set of active target IDs from ground truth
     def active_targets_at(t: float) -> List[int]:
         active = []
         for tid, states in gt.items():
@@ -673,10 +664,6 @@ def print_report(report: Dict) -> None:
     print(f"Overall                  : {'PASSED ✓' if report['success']['overall'] else 'FAILED ✗'}")
     print(f"{'='*60}\n")
 
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Task 6 — Gating & Data Association.")

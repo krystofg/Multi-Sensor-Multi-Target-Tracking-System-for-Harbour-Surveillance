@@ -1,0 +1,14 @@
+{
+  "scenario": "D",
+  "task": "T6 - Gating and Data Association",
+  "num_confirmed_tracks": 4,
+  "num_true_targets": 4,
+  "mean_motp_m": 3.583,
+  "mean_ce": 0.882,
+  "nis_inside_95_pct": 93.8,
+  "success": {
+    "motp_lt_15m": true,
+    "ce_lt_0.5": false,
+    "overall": false
+  }
+}
