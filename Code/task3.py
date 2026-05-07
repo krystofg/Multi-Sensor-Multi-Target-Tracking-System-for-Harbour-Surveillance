@@ -77,7 +77,7 @@ for t, group in groupby(radar_meas, key=lambda m: round(m.time, 1)):
     if best_m and best_nis <= gate:
         z = np.array([[best_m.range_m], [best_m.bearing_rad]])
         R = cfm.R_specs["radar"]
-        tracker.x, tracker.P, _, _ = tracker.update(tracker.x, tracker.P, z, R)
+        tracker.x, tracker.P, _, _ = tracker.update_radar(tracker.x, tracker.P, z, R)
         hit = True
         
     est_history.append({'t': t, 'N': tracker.x[0,0], 'E': tracker.x[1,0]})
