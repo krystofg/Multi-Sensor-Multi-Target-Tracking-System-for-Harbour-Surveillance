@@ -43,14 +43,14 @@ PLOT_DIR = OUT_DIR / "plots"
 # ---------------------------------------------------------------------------
 # Chi-squared gate thresholds  (degrees of freedom = measurement dimension)
 # P_G = 0.99  =>  chi2.ppf(0.99, df)
-GATE_RADAR  = float(chi2.ppf(0.99, df=2))   # 9.210  (range + bearing)
+GATE_RADAR = float(chi2.ppf(0.95, df=2))   
 GATE_CAMERA = float(chi2.ppf(0.99, df=1))   # 6.635  (bearing only)
 GATE_AIS    = float(chi2.ppf(0.99, df=2))   # 9.210  (range + bearing)
 
 # Track management thresholds
-M_CONFIRM  = 3    # hits needed in a window of N scans to confirm
+M_CONFIRM  = 4    # hits needed in a window of N scans to confirm
 N_CONFIRM  = 5    # sliding window length
-K_DELETE   = 5    # consecutive missed detections before deleting a track
+K_DELETE   = 3    # consecutive missed detections before deleting a track
 
 # Cost matrix sentinel for "outside gate" (must be larger than any real cost)
 LARGE_COST = 1e9
@@ -98,7 +98,7 @@ class Track:
     _id_counter = 0
 
     def __init__(self, x0: np.ndarray, P0: np.ndarray, cfm: CoordinateFrameManager,
-                 sigma_a: float = 0.1, born_at: float = 0.0):
+                 sigma_a: float = 0.15, born_at: float = 0.0):
         Track._id_counter += 1
         self.id = Track._id_counter
         self.state = TENTATIVE
