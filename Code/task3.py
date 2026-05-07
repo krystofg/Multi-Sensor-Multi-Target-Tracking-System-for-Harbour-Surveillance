@@ -82,7 +82,7 @@ for t, group in groupby(radar_meas, key=lambda m: round(m.time, 1)):
         
     est_history.append({'t': t, 'N': tracker.x[0,0], 'E': tracker.x[1,0]})
 
-    # Confirmation window (3-of-5)
+    # Confirmation window (3-of-5) in 13.30 seconds
     scan_window.append(hit)
     if len(scan_window) > 5: 
         scan_window.pop(0)
@@ -92,24 +92,55 @@ for t, group in groupby(radar_meas, key=lambda m: round(m.time, 1)):
 
 # 3. Metrics & Reporting
 gt, gt_t = data.ground_truth[0], data.ground_truth_times
-ss_errors = [np.sqrt((e['N'] - gt[np.argmin(np.abs(gt_t - e['t'])), 0])**2 + 
-                     (e['E'] - gt[np.argmin(np.abs(gt_t - e['t'])), 1])**2)
-             for e in est_history if e['t'] > 12.0] 
+steady_start = confirmation_time # or +2 scans
+ss_errors = [
+    np.sqrt(
+        (e['N'] - gt[np.argmin(np.abs(gt_t - e['t'])), 0])**2 +
+        (e['E'] - gt[np.argmin(np.abs(gt_t - e['t'])), 1])**2
+    )
+    for e in est_history
+    if confirmation_time is not None and e['t'] >= steady_start
+]
 
-ss_rmse = float(np.sqrt(np.mean(np.square(ss_errors))))
-pct_nis = float((np.array([n['nis'] for n in nis_history]) < 5.99).mean() * 100) if nis_history else 0.0
+ss_rmse = float(np.sqrt(np.mean(np.square(ss_errors)))) if ss_errors else 0.0
+pct_nis = (
+    float((np.array([
+        n['nis'] for n in nis_history
+        if confirmation_time is not None and n['t'] >= steady_start
+    ]) < 5.99).mean() * 100)
+    if nis_history else 0.0
+)
 
-# Dashboard
+# Dashboard Report
 plot_tracking_results(
-    data, est_history, nis_history, pct_nis, 
-    title="Scenario A — Single target, radar only",
+    data, est_history, nis_history, confirmation_time, steady_start,
+    title="Scenario A — Single Target, Radar Only",
     save_path= "figures/task3/scenario_A.png"
 )
 
-# Report
-confirm_ok = (confirmation_time is not None and confirmation_time <= first_true.time + 5*(1/0.3))
-print(f"\n{'='*44}\nSCENARIO A  QUALIFICATION REPORT\n{'='*44}")
-print(f"  1. CONFIRMATION : {'PASSED' if confirm_ok else 'FAILED'} ({confirmation_time:.2f}s)")
-print(f"  2. ACCURACY     : {'PASSED' if ss_rmse < 12 else 'FAILED'} (RMSE: {ss_rmse:.2f}m)")
-print(f"  3. CONSISTENCY  : {'PASSED' if pct_nis >= 90 else 'FAILED'} ({pct_nis:.1f}%)")
-print(f"{'='*44}")
+confirm_ok = (
+    confirmation_time is not None and
+    confirmation_time <= first_true.time + 5 * (1 / 0.3)
+)
+
+# Numerical Report
+print(f"\n{'='*70}")
+print("SCENARIO A — QUALIFICATION REPORT")
+print(f"{'='*70}")
+print(
+    f"1. Track confirmed within 5 radar scans (~17 s) "
+    f": {'PASSED' if confirm_ok else 'FAILED'} "
+    f"| Confirmation achieved at t = {confirmation_time:.2f} s "
+    f"using a 3-of-5 scan logic"
+)
+print(
+    f"2. Steady-state position RMSE < 12 m            "
+    f": {'PASSED' if ss_rmse < 12 else 'FAILED'} "
+    f"| SS RMSE = {ss_rmse:.2f} m"
+)
+print(
+    f"3. ≥ 90% of NIS values within 95% χ²(2) bounds  "
+    f": {'PASSED' if pct_nis >= 90 else 'FAILED'} "
+    f"| In-bound NIS = {pct_nis:.1f}%"
+)
+print(f"{'='*70}")

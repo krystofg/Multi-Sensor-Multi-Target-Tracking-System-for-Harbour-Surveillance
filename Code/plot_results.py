@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 
-def plot_tracking_results(simulation_output, est_history, nis_history, pct_nis,
+def plot_tracking_results(simulation_output, est_history, nis_history, confirmation_time, steady_start,
                           title="Tracking Results", target_id=0, save_path=None):
 
     fig = plt.figure(figsize=(16, 10))
@@ -42,12 +42,12 @@ def plot_tracking_results(simulation_output, est_history, nis_history, pct_nis,
     margin = 10
     ax_traj.set_xlim(min(est_e) - margin, max(est_e) + margin)
     ax_traj.set_ylim(min(est_n) - margin, max(est_n) + margin)
-
+    
     # =========================================================
-    # 2. STEADY-STATE POSITION ERROR (TOP RIGHT)
+    # 2. STEADY-STATE POSITION ERROR (POST-CONFIRMATION)
     # =========================================================
     ax_err = fig.add_subplot(gs[0, 1])
-    ax_err.set_title("Steady-State Position Error (t > 20 s)")
+    ax_err.set_title("Steady-State Position Error (Post-Track Confirmation)")
 
     if target_id in simulation_output.ground_truth:
 
@@ -58,19 +58,22 @@ def plot_tracking_results(simulation_output, est_history, nis_history, pct_nis,
         ss_errors = []
 
         for e in est_history:
-            if e['t'] <= 20.0:
+            if confirmation_time is None or e['t'] < steady_start:
                 continue
 
             idx = np.argmin(np.abs(gt_t - e['t']))
-            err = np.sqrt((e['N'] - gt[idx, 0])**2 +
-                          (e['E'] - gt[idx, 1])**2)
+
+            err = np.sqrt(
+                (e['N'] - gt[idx, 0])**2 +
+                (e['E'] - gt[idx, 1])**2
+            )
 
             ss_t.append(e['t'])
             ss_errors.append(err)
 
         if ss_errors:
             ax_err.plot(ss_t, ss_errors, 'g', lw=2, label="Position Error")
-            ax_err.axhline(12.0, color='r', ls='--', label="Limit 12 m")
+            ax_err.axhline(12.0, color='r', ls='--', label="12 m threshold")
 
         ax_err.set_xlabel("Time [s]")
         ax_err.set_ylabel("Error [m]")
@@ -78,31 +81,34 @@ def plot_tracking_results(simulation_output, est_history, nis_history, pct_nis,
         ax_err.legend(fontsize=8)
 
     # =========================================================
-    # 3. NIS (BOTTOM RIGHT)
+    # 3. NIS (POST-CONFIRMATION)
     # =========================================================
     ax_nis = fig.add_subplot(gs[1, 1])
-    ax_nis.set_title("NIS Consistency")
+    ax_nis.set_title("NIS Consistency (Post-Track Confirmation)")
 
-    nis_t = [n['t'] for n in nis_history]
-    nis_vals = [n['nis'] for n in nis_history]
+    nis_t = []
+    nis_vals = []
 
-    ax_nis.plot(nis_t, nis_vals, 'b.', ms=4,
-                label=f"NIS ({pct_nis:.1f}% in bounds)")
+    for n in nis_history:
+        if confirmation_time is None or n['t'] < steady_start:
+            continue
+        nis_t.append(n['t'])
+        nis_vals.append(n['nis'])
 
     chi2_lo, chi2_hi = 0.103, 5.991
 
-    t = np.array(nis_t)
-    ax_nis.fill_between(t, chi2_lo, chi2_hi, alpha=0.08, color='green')
-
-    ax_nis.axhline(chi2_hi, color='r', ls='--', label="χ² upper")
-    ax_nis.axhline(chi2_lo, color='orange', ls='--', label="χ² lower")
+    if nis_vals:
+        ax_nis.fill_between(nis_t, 0, chi2_hi, alpha=0.08, color='green')
+        ax_nis.plot(nis_t, nis_vals, 'b.', ms=4, label="NIS")
+        ax_nis.axhline(chi2_hi, color='r', ls='--', label="95% χ² upper")
+        ax_nis.axhline(chi2_lo, color='g', ls='--', label="95% χ² lower")
 
     ax_nis.set_xlabel("Time [s]")
     ax_nis.set_ylabel("NIS")
     ax_nis.set_ylim(0, 10)
     ax_nis.grid(True)
     ax_nis.legend(fontsize=8)
-
+    
     # =========================================================
     plt.tight_layout()
 
