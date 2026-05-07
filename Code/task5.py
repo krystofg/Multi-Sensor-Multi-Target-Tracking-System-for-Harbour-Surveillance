@@ -353,14 +353,20 @@ def plot_results(data, results, plot_dir):
 
     fig, ax = plt.subplots(figsize=(10, 4))
     sensor_colors = {"radar": "#d62728", "camera": "#9467bd", "ais": "#1f77b4"}
-    for key, result in results.items():
-        for sensor, color in sensor_colors.items():
-            rows = [r for r in result["nis"] if r["sensor"] == sensor and r["accepted"]]
-            if rows:
-                ax.scatter([r["t"] for r in rows], [r["nis"] for r in rows], s=18, alpha=0.75, color=color, label=f"{labels[key]} {sensor}")
-    ax.axhline(CHI2_95[2], color="0.25", ls="--", lw=1.2, label="2D 95% upper")
-    ax.axhline(CHI2_95[1], color="0.55", ls=":", lw=1.2, label="1D 95% upper")
-    ax.set(title="Accepted update NIS", xlabel="Time [s]", ylabel="NIS")
+    for sensor, color in sensor_colors.items():
+        rows = [r for result in results.values() for r in result["nis"] if r["sensor"] == sensor and r["accepted"]]
+        if rows:
+            ax.scatter(
+                [r["t"] for r in rows],
+                [r["nis"] / CHI2_95[r["dof"]] for r in rows],
+                s=20,
+                alpha=0.75,
+                color=color,
+                label=sensor.upper() if sensor == "ais" else sensor.title(),
+            )
+    ax.axhline(1.0, color="0.2", ls="--", lw=1.3, label="95% consistency limit")
+    ax.set(title="Accepted update consistency", xlabel="Time [s]", ylabel="NIS / 95% limit")
+    ax.set_ylim(bottom=0)
     ax.grid(True, alpha=0.2)
     ax.legend(frameon=True, framealpha=0.9, fontsize=8)
     fig.tight_layout()
