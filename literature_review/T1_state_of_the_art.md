@@ -76,12 +76,7 @@ from the EKF innovation,
 
 `d^2 = y^T S^{-1} y`,
 
-with a chi-square gate at `P_G = 0.99`, then chooses a one-to-one assignment
-between all active tracks and all gated detections for each sensor stream. This
-is directly aligned with T6: unmatched detections initialise tentative tracks,
-and unmatched tracks coast through predict-only steps. The underlying assignment
-problem is classically solved by Hungarian/Kuhn-Munkres methods [5]. Our small
-scenario sizes allow an exact recursive GNN search with a greedy fallback.
+with a chi-square gate at `P_G = 0.99`, then chooses a one-to-one assignment between all active tracks and all gated detections for each sensor stream. This is directly aligned with T6: unmatched detections initialise tentative tracks, and unmatched tracks coast through predict-only steps. The underlying assignment problem is a standard combinatorial optimization task; for this project's small scenario sizes, we utilize an exact recursive GNN search with a greedy fallback.
 
 ## Multi-Sensor EKF Fusion
 
@@ -109,7 +104,7 @@ in T4 rather than as the main architecture.
 Out-of-sequence measurements occur when delayed sensor packets arrive after the
 filter has already moved past their timestamps. Bar-Shalom and collaborators
 show that this is a distinct filtering problem in multi-sensor target tracking
-[6]. The provided JSON scenarios are processed in timestamp order, so the
+[5]. The provided JSON scenarios are processed in timestamp order, so the
 implementation does not require OOSM correction. For a live system, the tracker
 would need a fixed-lag buffer or a dedicated OOSM update.
 
@@ -122,7 +117,7 @@ position, but it is cooperative and intermittent. Small craft may not broadcast
 AIS at all, and cooperative vessels can have large or irregular revisit
 intervals. AIS/radar fusion work in maritime surveillance emphasises this
 tradeoff: AIS is accurate and low-clutter, while radar is continuous but noisy
-and cluttered [1,7].
+and cluttered [1,6].
 
 In this project, AIS is treated as an asynchronous measurement. Since the EKF
 measurement model is range/bearing relative to a sensor position, AIS NED
@@ -136,7 +131,7 @@ Harbours are cluttered: waves, wakes, quay structures, moored vessels, cranes,
 and multipath can all produce false or biased returns. High-resolution marine
 radar work often treats vessels as extended targets and uses specialised
 trackers such as MEM-EKF or PAKF-JPDA variants for orientation and extent
-estimation [8,9]. Our project uses point-target EKF tracking, so false alarms
+estimation [7,8]. Our project uses point-target EKF tracking, so false alarms
 are handled primarily by gating, GNN assignment, M-of-N confirmation, coasting,
 and deletion.
 
@@ -154,7 +149,7 @@ tracks outside their coverage.
 Modern visual multi-object tracking often follows a tracking-by-detection
 pipeline. ByteTrack is a representative recent method: it improves visual MOT by
 associating low-confidence detections as well as high-confidence detections,
-recovering occluded objects and reducing fragmented tracks [10]. This is
+recovering occluded objects and reducing fragmented tracks [9]. This is
 powerful for camera bounding boxes and can run in real time on visual benchmarks.
 
 For this harbour project, a deep MOT method is not the primary tracker because:
@@ -204,14 +199,12 @@ Scenario E achieves `MOTP = 2.386 m`, `CE = 0.345`, and `0` identity switches.
 
 [4] D. B. Reid, "An algorithm for tracking multiple targets", *IEEE Transactions on Automatic Control*, 1979. https://doi.org/10.1109/TAC.1979.1102177
 
-[5] H. W. Kuhn, "The Hungarian Method for the Assignment Problem", *Naval Research Logistics Quarterly*, 1955. https://doi.org/10.1002/nav.3800020109
+[5] M. Mallick, J. Krant, Y. Bar-Shalom, "Multi-sensor multi-target tracking using out-of-sequence measurements", *International Conference on Information Fusion*, 2002. https://doi.org/10.1109/ICIF.2002.1021142
 
-[6] M. Mallick, J. Krant, Y. Bar-Shalom, "Multi-sensor multi-target tracking using out-of-sequence measurements", *International Conference on Information Fusion*, 2002. https://doi.org/10.1109/ICIF.2002.1021142
+[6] B. K. Habtemariam, R. Tharmarasa, E. Meger, T. Kirubarajan, "Measurement level AIS/Radar Fusion for Maritime Surveillance", *SPIE*, 2012. https://doi.org/10.1117/12.920156
 
-[7] B. K. Habtemariam, R. Tharmarasa, E. Meger, T. Kirubarajan, "Measurement level AIS/Radar Fusion for Maritime Surveillance", *SPIE*, 2012. https://doi.org/10.1117/12.920156
+[7] J. S. Fowdur, M. Baum, F. Heymann, "A Marine Radar Dataset for Multiple Extended Target Tracking", MSAW, 2019. https://www.researchgate.net/publication/336666186_A_Marine_Radar_Dataset_for_Multiple_Extended_Target_Tracking
 
-[8] J. S. Fowdur, M. Baum, F. Heymann, "A Marine Radar Dataset for Multiple Extended Target Tracking", MSAW, 2019. https://www.researchgate.net/publication/336666186_A_Marine_Radar_Dataset_for_Multiple_Extended_Target_Tracking
+[8] J. S. Fowdur, M. Baum, F. Heymann, "An Overview of the PAKF-JPDA Approach for Elliptical Multiple Extended Target Tracking Using High-Resolution Marine Radar Data", *Remote Sensing*, 2023. https://www.mdpi.com/2072-4292/15/10/2503
 
-[9] J. S. Fowdur, M. Baum, F. Heymann, "An Overview of the PAKF-JPDA Approach for Elliptical Multiple Extended Target Tracking Using High-Resolution Marine Radar Data", *Remote Sensing*, 2023. https://www.mdpi.com/2072-4292/15/10/2503
-
-[10] Y. Zhang et al., "ByteTrack: Multi-Object Tracking by Associating Every Detection Box", ECCV, 2022. https://www.ecva.net/papers/eccv_2022/papers_ECCV/html/315_ECCV_2022_paper.php
+[9] Y. Zhang et al., "ByteTrack: Multi-Object Tracking by Associating Every Detection Box", ECCV, 2022. https://www.ecva.net/papers/eccv_2022/papers_ECCV/html/315_ECCV_2022_paper.php
